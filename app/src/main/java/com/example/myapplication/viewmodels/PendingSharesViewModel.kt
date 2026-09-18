@@ -1,16 +1,20 @@
 package com.example.myapplication.viewmodels
 
 import android.util.Log
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.myapplication.data.models.Project
 import com.example.myapplication.data.repository.ProjectRepository
 import com.example.myapplication.services.SyncManager
 import com.example.myapplication.utils.UserPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import retrofit2.Response
 import javax.inject.Inject
 
 @HiltViewModel
@@ -18,141 +22,118 @@ class PendingSharesViewModel @Inject constructor(
     private val repository: ProjectRepository,
     private val userPreferences: UserPreferences,
     private val syncManager: SyncManager
-) : ViewModel() {
+) : BaseViewModel() {
+
+    private companion object {
+        const val TAG = "PendingShares"
+    }
 
     private val _pendingProjects = MutableStateFlow<List<Project>>(emptyList())
-    val pendingProjects: StateFlow<List<Project>> = _pendingProjects
+    val pendingProjects: StateFlow<List<Project>> = _pendingProjects.asStateFlow()
 
-    private val _isLoading = MutableStateFlow(false)
-    val isLoading: StateFlow<Boolean> = _isLoading
+    private val _processingIds = MutableStateFlow<Set<String>>(emptySet())
+    val processingIds: StateFlow<Set<String>> = _processingIds.asStateFlow()
 
-    private val _isAccepting = MutableStateFlow(false)
-    val isAccepting: StateFlow<Boolean> = _isAccepting
-
-    private val _isDeclining = MutableStateFlow(false)
-    val isDeclining: StateFlow<Boolean> = _isDeclining
-
-    private val _errorMessage = MutableStateFlow<String?>(null)
-    val errorMessage: StateFlow<String?> = _errorMessage
+    private val activeOperations = mutableMapOf<String, Job>()
 
     fun loadPendingProjects() {
-        viewModelScope.launch {
-            _isLoading.value = true
-            _errorMessage.value = null
-
-            try {
-                val userId = userPreferences.getUserId()
-                if (userId == null) {
-                    Log.w("PendingShares", "User not logged in")
-                    _pendingProjects.value = emptyList()
-                    return@launch
-                }
-
-                val response = repository.getPendingProjects(userId)
-                if (response.isSuccessful) {
-                    _pendingProjects.value = response.body() ?: emptyList()
-                    Log.d("PendingShares", "Loaded ${_pendingProjects.value.size} pending projects")
-                } else {
-                    _errorMessage.value = "Ошибка загрузки: ${response.code()}"
-                    Log.e("PendingShares", "Failed to load pending projects: ${response.code()}")
-                }
-            } catch (e: Exception) {
-                _errorMessage.value = "Ошибка: ${e.message}"
-                Log.e("PendingShares", "Error loading pending projects: ${e.message}")
-            } finally {
-                _isLoading.value = false
+        safeLaunch(
+            block = { fetchPendingProjects() },
+            onSuccess = { projects ->
+                _pendingProjects.value = projects
+                Log.d(TAG, "Loaded ${projects.size} pending projects")
+            },
+            onError = { e ->
+                Log.e(TAG, "Error loading pending projects: ${e.message}")
+                _pendingProjects.value = emptyList()
             }
+        )
+    }
+
+    private suspend fun fetchPendingProjects(): List<Project> {
+        val userId = requireUserId()
+        val response = repository.getPendingProjects(userId)
+
+        if (!response.isSuccessful) {
+            throw Exception("Ошибка загрузки: ${response.code()}")
         }
+        return response.body() ?: emptyList()
     }
 
     fun acceptShare(projectId: String) {
-        viewModelScope.launch {
-            if (_isAccepting.value) {
-                Log.d("PendingShares", "Already accepting, skipping")
-                return@launch
-            }
-
-            _isAccepting.value = true
-            _errorMessage.value = null
-
-            try {
-                val userId = userPreferences.getUserId()
-                if (userId == null) {
-                    _errorMessage.value = "Пользователь не авторизован"
-                    return@launch
-                }
-
-                val response = repository.acceptShare(projectId, userId)
-                if (response.isSuccessful) {
-                    _pendingProjects.value = _pendingProjects.value.filter { it.id != projectId }
-
-
+        runShareOperation(
+            projectId = projectId,
+            action = { userId -> repository.acceptShare(projectId) },
+            successMessage = "Share accepted",
+            afterSuccess = { userId ->
+                if (syncManager.hasInternetConnection()) {
                     syncManager.syncDataFromServer(userId)
-
-                    Log.d("PendingShares", "Share accepted successfully for project: $projectId")
-                } else {
-                    when (response.code()) {
-                        404 -> _errorMessage.value = "Приглашение не найдено"
-                        403 -> _errorMessage.value = "Нет доступа к этому приглашению"
-                        else -> _errorMessage.value = "Ошибка при принятии: ${response.code()}"
-                    }
-                    Log.e("PendingShares", "Accept share failed: ${response.code()} ${response.message()}")
                 }
-            } catch (e: Exception) {
-                _errorMessage.value = "Ошибка: ${e.message}"
-                Log.e("PendingShares", "Error accepting share: ${e.message}")
-            } finally {
-                _isAccepting.value = false
             }
-        }
+        )
     }
 
     fun declineShare(projectId: String) {
-        viewModelScope.launch {
-            if (_isDeclining.value) {
-                Log.d("PendingShares", "Already declining, skipping")
-                return@launch
-            }
-
-            _isDeclining.value = true
-            _errorMessage.value = null
-
-            try {
-                val userId = userPreferences.getUserId()
-                if (userId == null) {
-                    _errorMessage.value = "Пользователь не авторизован"
-                    return@launch
-                }
-
-                val response = repository.declineShare(projectId, userId)
-                if (response.isSuccessful) {
-                    _pendingProjects.value = _pendingProjects.value.filter { it.id != projectId }
-
-                    Log.d("PendingShares", "Share declined successfully for project: $projectId")
-
-
-                } else {
-                    when (response.code()) {
-                        404 -> _errorMessage.value = "Приглашение не найдено"
-                        403 -> _errorMessage.value = "Нет доступа к этому приглашению"
-                        else -> _errorMessage.value = "Ошибка при отклонении: ${response.code()}"
-                    }
-                    Log.e("PendingShares", "Decline share failed: ${response.code()} ${response.message()}")
-                }
-            } catch (e: Exception) {
-                _errorMessage.value = "Ошибка: ${e.message}"
-                Log.e("PendingShares", "Error declining share: ${e.message}")
-            } finally {
-                _isDeclining.value = false
-            }
-        }
+        runShareOperation(
+            projectId = projectId,
+            action = { userId -> repository.declineShare(projectId) },
+            successMessage = "Share declined",
+            afterSuccess = { }
+        )
     }
 
-    fun clearErrorMessage() {
-        _errorMessage.value = null
+    private fun runShareOperation(
+        projectId: String,
+        action: suspend (userId: String) -> Response<Unit>,
+        successMessage: String,
+        afterSuccess: suspend (userId: String) -> Unit
+    ) {
+        if (activeOperations.containsKey(projectId)) {
+            Log.d(TAG, "Operation for $projectId already in progress, skipping")
+            return
+        }
+
+        _processingIds.update { it + projectId }
+
+        val job = viewModelScope.launch {
+            try {
+                val userId = requireUserId()
+                val response = action(userId)
+
+                if (!response.isSuccessful) {
+                    throw Exception(shareErrorMessage(response.code()))
+                }
+
+                _pendingProjects.update { list -> list.filter { it.id != projectId } }
+
+                afterSuccess(userId)
+                Log.d(TAG, "$successMessage: $projectId")
+
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Operation failed for $projectId: ${e.message}")
+                setError(e.message ?: "Неизвестная ошибка")
+            } finally {
+                _processingIds.update { it - projectId }
+                activeOperations.remove(projectId)
+            }
+        }
+
+        activeOperations[projectId] = job
     }
 
     fun refresh() {
         loadPendingProjects()
+    }
+
+    private fun requireUserId(): String =
+        userPreferences.getUserId()
+            ?: throw IllegalStateException("Пользователь не авторизован")
+
+    private fun shareErrorMessage(code: Int): String = when (code) {
+        404 -> "Приглашение не найдено"
+        403 -> "Нет доступа к этому приглашению"
+        else -> "Ошибка операции: $code"
     }
 }

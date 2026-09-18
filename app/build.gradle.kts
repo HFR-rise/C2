@@ -7,6 +7,8 @@ plugins {
 }
 
 android {
+
+
     namespace = "com.example.myapplication"
     compileSdk = 35  // ← ИЗМЕНИТЬ НА 35
 
@@ -18,6 +20,12 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // ✅ Базовый URL для HTTP-запросов (Retrofit)
+        buildConfigField("String", "BASE_URL", "\"http://192.168.43.150:8080/\"")
+
+        // ✅ Базовый URL для WebSocket (без query-параметров)
+        buildConfigField("String", "WS_BASE_URL", "\"ws://192.168.43.150:8080/ws/estimates\"")
     }
 
     buildTypes {

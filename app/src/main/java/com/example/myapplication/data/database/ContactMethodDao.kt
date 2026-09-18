@@ -1,6 +1,11 @@
 package com.example.myapplication.data.database
 
-import androidx.room.*
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Update
 import com.example.myapplication.data.models.ContactMethod
 import kotlinx.coroutines.flow.Flow
 
@@ -8,10 +13,22 @@ import kotlinx.coroutines.flow.Flow
 interface ContactMethodDao {
 
     @Query("SELECT * FROM contact_methods WHERE contactId = :contactId")
-    fun getMethodsForContact(contactId: String): Flow<List<ContactMethod>>
+    fun getContactMethods(contactId: String): Flow<List<ContactMethod>>
+
+    @Query("SELECT * FROM contact_methods")
+    fun getAllContactMethods(): Flow<List<ContactMethod>>
+
+    @Query("SELECT * FROM contact_methods WHERE contactId = :contactId")
+    suspend fun getContactMethodsOnce(contactId: String): List<ContactMethod>
+
+    @Query("SELECT * FROM contact_methods WHERE id = :id")
+    suspend fun getContactMethodById(id: String): ContactMethod?
 
     @Insert
     suspend fun insertContactMethod(method: ContactMethod)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertContactMethod(method: ContactMethod)
 
     @Update
     suspend fun updateContactMethod(method: ContactMethod)
@@ -19,18 +36,9 @@ interface ContactMethodDao {
     @Delete
     suspend fun deleteContactMethod(method: ContactMethod)
 
-    @Query("DELETE FROM contact_methods")
-    suspend fun deleteAll()
-
     @Query("DELETE FROM contact_methods WHERE id = :methodId")
     suspend fun deleteContactMethodById(methodId: String)
 
-    @Query("SELECT * FROM contact_methods WHERE id = :id")
-    suspend fun getContactMethodById(id: String): ContactMethod?
-
-
-
-//    @Query("DELETE FROM contact_methods WHERE contactId IN (SELECT id FROM contacts WHERE userId = :userId)")
-//    suspend fun deleteAllContactMethodsForUser(userId: String)
-
+    @Query("DELETE FROM contact_methods")
+    suspend fun deleteAll()
 }

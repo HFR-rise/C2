@@ -1,27 +1,25 @@
-
 package com.example.myapplication.viewmodels
 
 import android.util.Log
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.myapplication.data.models.SendCodeRequest
-import com.example.myapplication.data.repository.*
-import com.example.myapplication.data.database.*
 import com.example.myapplication.data.models.UserResponse
 import com.example.myapplication.data.models.VerifyCodeRequest
 import com.example.myapplication.network.ApiService
 import com.example.myapplication.services.SyncManager
 import com.example.myapplication.services.WebSocketService
 import com.example.myapplication.utils.UserPreferences
+import com.google.gson.Gson
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import retrofit2.Response
 import java.util.UUID
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
@@ -29,371 +27,306 @@ class AuthViewModel @Inject constructor(
     private val userPreferences: UserPreferences,
     private val webSocketService: WebSocketService,
     private val syncManager: SyncManager,
-    private val projectRepository: ProjectRepository,
-    private val objectRepository: ObjectRepository,
-    private val contactRepository: ContactRepository
-) : ViewModel() {
+    private val gson: Gson
+) : BaseViewModel() {
 
+    private companion object {
+        const val TAG = "AuthViewModel"
+        const val MIN_CODE_LENGTH = 4
+    }
 
     private val _phoneNumber = MutableStateFlow("")
-    val phoneNumber: StateFlow<String> = _phoneNumber
+    val phoneNumber: StateFlow<String> = _phoneNumber.asStateFlow()
 
     private val _verificationCode = MutableStateFlow("")
-    val verificationCode: StateFlow<String> = _verificationCode
+    val verificationCode: StateFlow<String> = _verificationCode.asStateFlow()
 
     private val _isCodeSent = MutableStateFlow(false)
-    val isCodeSent: StateFlow<Boolean> = _isCodeSent
-
-    private val _isLoading = MutableStateFlow(false)
-    val isLoading: StateFlow<Boolean> = _isLoading
-
-    private val _errorMessage = MutableStateFlow<String?>(null)
-    val errorMessage: StateFlow<String?> = _errorMessage
-
-    private val _errorMessageResId = MutableStateFlow<Int?>(null)
-    val errorMessageResId: StateFlow<Int?> = _errorMessageResId
+    val isCodeSent: StateFlow<Boolean> = _isCodeSent.asStateFlow()
 
     private val _currentUser = MutableStateFlow<UserResponse?>(null)
-    val currentUser: StateFlow<UserResponse?> = _currentUser
+    val currentUser: StateFlow<UserResponse?> = _currentUser.asStateFlow()
 
     private val _isLoggedIn = MutableStateFlow(false)
-    val isLoggedIn: StateFlow<Boolean> = _isLoggedIn
+    val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
 
     private val _showAccountInUseError = MutableStateFlow(false)
-    val showAccountInUseError: StateFlow<Boolean> = _showAccountInUseError
-
-
-    private val _navigationEvent = MutableSharedFlow<NavigationEvent>()
-    val navigationEvent = _navigationEvent.asSharedFlow()
-
-    sealed class NavigationEvent {
-        object NavigateToAuth : NavigationEvent()
-        object NavigateToMain : NavigationEvent()
-    }
-
+    val showAccountInUseError: StateFlow<Boolean> = _showAccountInUseError.asStateFlow()
 
     init {
+        setupForceLogoutCallbacks()
+        restoreSessionIfLoggedIn()
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        syncManager.onForceLogout = null
+        webSocketService.onForceLogout = null
+        Log.d(TAG, "Callbacks removed")
+    }
+
+    private fun setupForceLogoutCallbacks() {
         syncManager.onForceLogout = {
-            Log.w("AuthViewModel", "Force logout triggered by sync manager")
-            forceLogout()
+            Log.w(TAG, "Force logout from SyncManager")
+            viewModelScope.launch(Dispatchers.Main) { forceLogout() }
         }
-
         webSocketService.onForceLogout = {
-            Log.w("AuthViewModel", "FORCE_LOGOUT received from server")
-            forceLogout()
-        }
-
-        val savedUserId = userPreferences.getUserId()
-        if (savedUserId != null && userPreferences.isLoggedIn()) {
-            _isLoggedIn.value = true
-            webSocketService.connect(savedUserId)
-            viewModelScope.launch {
-                syncManager.syncIfQueueIsEmpty(savedUserId)
-            }
+            Log.w(TAG, "FORCE_LOGOUT from server")
+            viewModelScope.launch(Dispatchers.Main) { forceLogout() }
         }
     }
 
+    private fun restoreSessionIfLoggedIn() {
+        val savedUserId = userPreferences.getUserId() ?: return
+        if (!userPreferences.isLoggedIn()) return
+
+        viewModelScope.launch {
+            val isValid = try {
+                syncManager.checkCurrentSession()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Session check failed: ${e.message}", e)
+                false
+            }
+
+            if (!isValid) {
+                Log.w(TAG, "Session invalid on restore — forcing logout")
+                forceLogout()
+                return@launch
+            }
+
+            try {
+                syncManager.syncDataFromServer(savedUserId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Initial sync failed: ${e.message}", e)
+            }
+
+            try {
+                webSocketService.connect(savedUserId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "WS connect failed: ${e.message}", e)
+            }
+
+            _isLoggedIn.value = true
+        }
+    }
 
     fun updatePhoneNumber(value: String) {
         _phoneNumber.value = value
-        _errorMessage.value = null
-        _errorMessageResId.value = null
-        _showAccountInUseError.value = false
+        clearAllErrors()
     }
 
     fun updateVerificationCode(value: String) {
         _verificationCode.value = value
-        _errorMessage.value = null
-        _errorMessageResId.value = null
+        clearAllErrors()
+    }
+
+    fun clearAccountInUseError() {
+        _showAccountInUseError.value = false
+    }
+
+    private fun clearAllErrors() {
+        setError(null)
         _showAccountInUseError.value = false
     }
 
     fun sendCode() {
-        viewModelScope.launch {
-            _isLoading.value = true
-            _errorMessage.value = null
-            _errorMessageResId.value = null
-            _showAccountInUseError.value = false
+        if (_phoneNumber.value.isBlank()) return
 
-            try {
-                val request = SendCodeRequest(_phoneNumber.value)
-                val response = apiService.sendCode(request)
-
+        safeLaunch(
+            block = { apiService.sendCode(SendCodeRequest(_phoneNumber.value)) },
+            onSuccess = { response ->
                 if (response.isSuccessful) {
                     _isCodeSent.value = true
-                    Log.d("AuthViewModel", "Code sent successfully to ${_phoneNumber.value}")
+                    Log.d(TAG, "Code sent to ${_phoneNumber.value}")
                 } else {
-                    when (response.code()) {
-                        400 -> {
-                            _errorMessage.value = "Неверный формат номера телефона"
-                            _errorMessageResId.value = com.example.myapplication.R.string.invalid_phone_format
-                        }
-                        429 -> {
-                            _errorMessage.value = "Слишком много попыток. Попробуйте позже."
-                            _errorMessageResId.value = com.example.myapplication.R.string.too_many_attempts
-                        }
-                        else -> {
-                            _errorMessage.value = "Ошибка отправки кода (${response.code()})"
-                        }
-                    }
-                    Log.e("AuthViewModel", "Send code failed: ${response.code()}")
+                    handleSendCodeError(response.code())
                 }
-            } catch (e: Exception) {
-                _errorMessage.value = "Ошибка сети: ${e.message}"
-                Log.e("AuthViewModel", "Error sending code: ${e.message}")
-            } finally {
-                _isLoading.value = false
+            },
+            onError = { e ->
+                setError("Ошибка сети: ${e.message}")
             }
-        }
+        )
     }
 
-    fun resetToPhoneInput() {
-        _isCodeSent.value = false
-        _verificationCode.value = ""
-        _errorMessage.value = null
-        _errorMessageResId.value = null
-        _showAccountInUseError.value = false
+    private fun handleSendCodeError(code: Int) {
+        setError(
+            when (code) {
+                400 -> "Неверный формат номера телефона"
+                429 -> "Слишком много попыток. Попробуйте позже."
+                else -> "Ошибка отправки кода ($code)"
+            }
+        )
+        Log.e(TAG, "Send code failed: $code")
     }
 
     fun verifyCode() {
-        viewModelScope.launch {
-            _isLoading.value = true
-            _errorMessage.value = null
-            _errorMessageResId.value = null
-            _showAccountInUseError.value = false
+        if (_verificationCode.value.length < MIN_CODE_LENGTH) return
 
-            try {
+        safeLaunch(
+            block = {
                 val deviceId = getOrCreateDeviceId()
-
                 val request = VerifyCodeRequest(
                     phoneNumber = _phoneNumber.value,
                     code = _verificationCode.value,
                     deviceId = deviceId
                 )
-                val response = apiService.verifyCode(request)
-
-                if (response.isSuccessful && response.body() != null) {
-                    val user = response.body()!!
-                    _currentUser.value = user
-
-                    userPreferences.saveUserId(user.id)
-                    userPreferences.savePhoneNumber(user.phoneNumber)
-                    userPreferences.setLoggedIn(true)
-                    userPreferences.saveDeviceId(deviceId)
-
-                    clearAllLocalData()
-
-                    webSocketService.connect(user.id)
-
-                    delay(500)
-
-                    syncManager.syncDataFromServer(user.id)
-
-                    _isLoggedIn.value = true
-                    _showAccountInUseError.value = false
-
-                    _navigationEvent.emit(NavigationEvent.NavigateToMain)
-
-                    Log.d("AuthViewModel", "✅ User verified successfully: ${user.id}")
-
-                } else if (response.code() == 409) {
-                    handleConflictError(response)
-
-                } else if (response.code() == 400) {
-                    _errorMessage.value = "Неверный или просроченный код подтверждения"
-                    _errorMessageResId.value = com.example.myapplication.R.string.invalid_verification_code
-                    Log.w("AuthViewModel", "Invalid verification code")
-
-                } else if (response.code() == 404) {
-                    _errorMessage.value = "Пользователь не найден"
-                    Log.w("AuthViewModel", "User not found")
-
-                } else {
-                    _errorMessage.value = "Ошибка: ${response.code()} ${response.message()}"
-                    Log.e("AuthViewModel", "Verification failed: ${response.code()}")
-                }
-
-            } catch (e: Exception) {
-                _errorMessage.value = "Ошибка сети: ${e.message}"
-                Log.e("AuthViewModel", "Error verifying code: ${e.message}", e)
-            } finally {
-                _isLoading.value = false
+                apiService.verifyCode(request) to deviceId
+            },
+            onSuccess = { (response, deviceId) ->
+                handleVerifyResponse(response, deviceId)
+            },
+            onError = { e ->
+                setError("Ошибка сети: ${e.message}")
             }
+        )
+    }
+
+    private suspend fun handleVerifyResponse(
+        response: Response<UserResponse>,
+        deviceId: String
+    ) {
+        if (response.isSuccessful) {
+            val user = response.body()
+            if (user != null) {
+                onLoginSuccess(user, deviceId)
+            } else {
+                setError("Сервер вернул пустой ответ")
+            }
+            return
+        }
+
+        when (response.code()) {
+            409 -> handleConflictError(response)
+            400 -> setError("Неверный или просроченный код подтверждения")
+            404 -> setError("Пользователь не найден")
+            else -> setError("Ошибка: ${response.code()} ${response.message()}")
         }
     }
 
-    private suspend fun handleConflictError(response: retrofit2.Response<UserResponse>) {
-        var errorMessage = "Аккаунт уже используется на другом устройстве"
+    private suspend fun onLoginSuccess(user: UserResponse, deviceId: String) {
+        _currentUser.value = user
 
-        try {
-            val errorBody = response.errorBody()?.string()
-            if (!errorBody.isNullOrEmpty()) {
-                val json = JSONObject(errorBody)
-                val serverMessage = json.optString("error", "")
-                if (serverMessage.isNotEmpty()) {
-                    errorMessage = serverMessage
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("AuthViewModel", "Error parsing error response: ${e.message}")
+        runCatching { syncManager.clearAllLocalData() }
+            .onFailure { Log.e(TAG, "Local cleanup failed: ${it.message}") }
+
+        userPreferences.apply {
+            saveUserId(user.id)
+            savePhoneNumber(user.phoneNumber)
+            setLoggedIn(true)
+            saveDeviceId(deviceId)
         }
 
-        _errorMessage.value = errorMessage
+        _showAccountInUseError.value = false
+        _isLoggedIn.value = true
+
+        viewModelScope.launch {
+            try {
+                syncManager.syncDataFromServer(user.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Initial sync failed: ${e.message}", e)
+            }
+
+            try {
+                webSocketService.connect(user.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "WS connect failed: ${e.message}", e)
+            }
+        }
+
+        Log.d(TAG, "✅ User logged in: ${user.id}")
+    }
+
+    private fun handleConflictError(response: Response<UserResponse>) {
+        setError(parseErrorMessage(response) ?: "Аккаунт уже используется на другом устройстве")
         _showAccountInUseError.value = true
         _verificationCode.value = ""
-
-        Log.w("AuthViewModel", "❌ Login rejected - account already in use on another device")
+        Log.w(TAG, "Login rejected — account in use")
     }
 
-    fun clearAccountInUseError() {
-        _showAccountInUseError.value = false
-        _errorMessage.value = null
-        _errorMessageResId.value = null
+    private fun parseErrorMessage(response: Response<*>): String? {
+        val body = response.errorBody()?.string() ?: return null
+        return runCatching {
+            gson.fromJson(body, ApiError::class.java)?.error?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
+
+    private data class ApiError(val error: String?)
+
+    fun resetToPhoneInput() {
+        _isCodeSent.value = false
+        _verificationCode.value = ""
+        clearAllErrors()
     }
 
     fun retryWithSamePhone() {
         _verificationCode.value = ""
-        _errorMessage.value = null
-        _errorMessageResId.value = null
-        _showAccountInUseError.value = false
-        Log.d("AuthViewModel", "Retry with same phone: ${_phoneNumber.value}")
+        clearAllErrors()
     }
 
-    fun resetToPhoneInputWithClear() {
-        resetToPhoneInput()
-        _showAccountInUseError.value = false
-        _phoneNumber.value = ""
-        Log.d("AuthViewModel", "Reset to phone input with clear")
-    }
+    fun logout() = performLogout(sendToServer = true)
 
-    private suspend fun clearAllLocalData() {
-        try {
-            Log.d("AuthViewModel", "Clearing all local data before new login")
-            projectRepository.deleteAllProjects()
-            objectRepository.deleteAllObjects()
-            contactRepository.deleteAllContacts()
-            syncManager.clearAllOperations()
-            Log.d("AuthViewModel", "All local data cleared successfully")
-        } catch (e: Exception) {
-            Log.e("AuthViewModel", "Error clearing local data: ${e.message}")
-        }
-    }
+    fun forceLogout() = performLogout(sendToServer = false)
 
-
-    fun forceLogout() {
+    private fun performLogout(sendToServer: Boolean) {
         viewModelScope.launch {
-            try {
-                Log.e("AuthViewModel", "🚨 FORCE LOGOUT EXECUTING 🚨")
-
-                val currentUserId = userPreferences.getUserId()
-                if (currentUserId == null) {
-                    Log.w("AuthViewModel", "No user ID found, skipping force logout")
-                    return@launch
-                }
-
-                Log.e("AuthViewModel", "Current userId: $currentUserId")
-                Log.e("AuthViewModel", "Current isLoggedIn before: ${_isLoggedIn.value}")
-
-                webSocketService.disconnect()
-                Log.d("AuthViewModel", "WebSocket disconnected")
-
-                syncManager.clearAllLocalData()
-                Log.d("AuthViewModel", "Local data cleared")
-
-                userPreferences.clear()
-                Log.d("AuthViewModel", "SharedPreferences cleared")
-
-                _currentUser.value = null
-                _isCodeSent.value = false
-                _phoneNumber.value = ""
-                _verificationCode.value = ""
-                _showAccountInUseError.value = false
-                _errorMessage.value = null
-
-                _isLoggedIn.value = false
-                Log.e("AuthViewModel", "✅ isLoggedIn set to FALSE")
-
-                _navigationEvent.emit(NavigationEvent.NavigateToAuth)
-
-                Log.d("AuthViewModel", "✅ Force logout completed for user: $currentUserId")
-
-            } catch (e: Exception) {
-                Log.e("AuthViewModel", "Error during force logout: ${e.message}", e)
+            val userId = userPreferences.getUserId()
+            if (userId == null) {
+                Log.w(TAG, "No user ID — skipping server logout")
+                performLocalLogout()
+                return@launch
             }
-        }
-    }
 
+            Log.d(TAG, "Logout (sendToServer=$sendToServer) for $userId")
 
-    fun logout() {
-        viewModelScope.launch {
-            try {
-                Log.d("AuthViewModel", "Executing normal logout")
-
-                val currentUserId = userPreferences.getUserId()
-                if (currentUserId == null) {
-                    Log.w("AuthViewModel", "No user ID found, skipping logout")
-                    return@launch
-                }
-
-                if (syncManager.hasInternetConnection()) {
-                    try {
-                        apiService.logout(currentUserId)
-                        Log.d("AuthViewModel", "Logout request sent to server")
-                    } catch (e: Exception) {
-                        Log.e("AuthViewModel", "Error sending logout to server: ${e.message}")
-                    }
-                }
-
-                webSocketService.disconnect()
-                syncManager.clearAllLocalData()
-                userPreferences.clear()
-
-                _isLoggedIn.value = false
-                _currentUser.value = null
-                _isCodeSent.value = false
-                _phoneNumber.value = ""
-                _verificationCode.value = ""
-                _showAccountInUseError.value = false
-
-                _navigationEvent.emit(NavigationEvent.NavigateToAuth)
-
-                Log.d("AuthViewModel", "✅ Normal logout completed for user: $currentUserId")
-            } catch (e: Exception) {
-                Log.e("AuthViewModel", "Error during logout: ${e.message}")
+            if (sendToServer && syncManager.hasInternetConnection()) {
+                runCatching { apiService.logout() }
+                    .onFailure { Log.e(TAG, "Server logout failed: ${it.message}") }
             }
+
+            performLocalLogout()
         }
     }
 
-    fun refreshLoginState() {
-        viewModelScope.launch {
-            delay(100)
-            _isLoggedIn.value = true
-            Log.d("AuthViewModel", "Login state refreshed")
-        }
+    private suspend fun performLocalLogout() {
+        runCatching { syncManager.stopPeriodicSync() }
+            .onFailure { Log.e(TAG, "Stop periodic sync failed: ${it.message}") }
+
+        runCatching { webSocketService.disconnect() }
+            .onFailure { Log.e(TAG, "WS disconnect failed: ${it.message}") }
+
+        runCatching { syncManager.clearAllLocalData() }
+            .onFailure { Log.e(TAG, "Local data clear failed: ${it.message}") }
+
+        runCatching { userPreferences.clear() }
+            .onFailure { Log.e(TAG, "Prefs clear failed: ${it.message}") }
+
+        resetAllStates()
+        Log.d(TAG, "✅ Logout complete")
     }
 
-    private fun getOrCreateDeviceId(): String {
-        var deviceId = userPreferences.getDeviceId()
-        if (deviceId.isNullOrEmpty()) {
-            deviceId = UUID.randomUUID().toString()
-            userPreferences.saveDeviceId(deviceId)
-            Log.d("AuthViewModel", "Created new deviceId: $deviceId")
-        }
-        return deviceId
-    }
-
-    fun canAttemptLogin(): Boolean {
-        return !_showAccountInUseError.value && !_isLoading.value
-    }
-
-    fun clearAllStates() {
+    private fun resetAllStates() {
+        _currentUser.value = null
+        _isCodeSent.value = false
         _phoneNumber.value = ""
         _verificationCode.value = ""
-        _isCodeSent.value = false
-        _isLoading.value = false
-        _errorMessage.value = null
-        _errorMessageResId.value = null
         _showAccountInUseError.value = false
-        _currentUser.value = null
+        setError(null)
+        _isLoggedIn.value = false
     }
+
+    private fun getOrCreateDeviceId(): String =
+        userPreferences.getDeviceId() ?: UUID.randomUUID().toString().also {
+            userPreferences.saveDeviceId(it)
+            Log.d(TAG, "Created deviceId: $it")
+        }
 }

@@ -19,9 +19,9 @@ fun GradientDivider() {
             .background(
                 brush = Brush.horizontalGradient(
                     colors = listOf(
-                        Color(0xFF4CAF50), // Зелёный
-                        Color(0xFF2196F3), // Синий
-                        Color(0xFF9C27B0)  // Фиолетовый
+                        Color(0xFF4CAF50),
+                        Color(0xFF2196F3),
+                        Color(0xFF9C27B0)
                     )
                 )
             )

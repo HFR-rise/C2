@@ -1,37 +1,49 @@
 package com.example.estimateserver;
 
 import com.example.estimateserver.service.WebSocketService;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.CommandLineRunner;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+
+import java.util.concurrent.CompletableFuture;
 
 @SpringBootApplication
 @EnableScheduling
-public class EstimateserverApplication implements CommandLineRunner {
+public class EstimateserverApplication {
 
-    @Autowired
-    private WebSocketService webSocketService;
+    private static final Logger log = LoggerFactory.getLogger(EstimateserverApplication.class);
+
+    private final WebSocketService webSocketService;
+
+    public EstimateserverApplication(WebSocketService webSocketService) {
+        this.webSocketService = webSocketService;
+    }
 
     public static void main(String[] args) {
         SpringApplication.run(EstimateserverApplication.class, args);
-        System.out.println("Server started");
+        log.info("Server started");
     }
 
-    @Override
-    public void run(String... args) throws Exception {
-        System.out.println("=== SERVER STARTED ===");
+    @EventListener(ApplicationReadyEvent.class)
+    public void onApplicationReady() {
+        CompletableFuture.runAsync(this::runStartupPhase);
+    }
 
-        webSocketService.setServerJustStarted(true);
+    private void runStartupPhase() {
+        log.info("=== SERVER STARTUP PHASE ===");
 
-        System.out.println("⚠️ Restoring sessions and sending FORCE_LOGOUT...");
+        try {
+            webSocketService.setServerJustStarted(true);
+            log.warn("Sending FORCE_LOGOUT to all active sessions...");
 
-        webSocketService.forceLogoutAllActiveSessionsImmediately();
+            webSocketService.forceLogoutAllActiveSessions();
 
-        Thread.sleep(5000);
-        webSocketService.setServerJustStarted(false);
-
-        System.out.println("✅ Server startup phase completed, accepting new connections");
+        } catch (Exception e) {
+            log.error("Startup phase failed: {}", e.getMessage(), e);
+        }
     }
 }

@@ -2,18 +2,22 @@ package com.example.estimateserver.websocket;
 
 import com.example.estimateserver.service.UserService;
 import com.example.estimateserver.service.WebSocketService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
-import java.net.URI;
-import java.util.logging.Logger;
+import org.springframework.web.util.UriComponentsBuilder;
+
+import java.io.IOException;
 
 @Component
 public class EstimateWebSocketHandler extends TextWebSocketHandler {
 
-    private static final Logger logger = Logger.getLogger(EstimateWebSocketHandler.class.getName());
+    private static final Logger log = LoggerFactory.getLogger(EstimateWebSocketHandler.class);
+
     private final WebSocketService webSocketService;
     private final UserService userService;
 
@@ -27,50 +31,39 @@ public class EstimateWebSocketHandler extends TextWebSocketHandler {
         String userId = extractParameter(session, "userId");
         String deviceId = extractParameter(session, "deviceId");
 
-        System.out.println("🔵 WebSocket connection attempt - User: " + userId + ", Device: " + deviceId);
+        log.debug("WebSocket connection attempt: userId={}, deviceId={}", userId, deviceId);
 
-        if (userId == null || userId.isEmpty()) {
-            logger.warning("❌ Connection rejected: userId not provided");
-            session.close(CloseStatus.POLICY_VIOLATION);
+        if (isBlank(userId) || isBlank(deviceId)) {
+            log.warn("Connection rejected: missing userId or deviceId");
+            closeSilently(session);
             return;
         }
 
-        if (deviceId == null || deviceId.isEmpty()) {
-            logger.warning("❌ Connection rejected: deviceId not provided");
-            session.close(CloseStatus.POLICY_VIOLATION);
+        if (webSocketService.isServerJustStarted()) {
+            log.warn("Connection rejected: server in startup phase, userId={}", userId);
+            rejectSession(session, "server_startup");
             return;
         }
 
-        if (webSocketService.isServerJustStarted() && !isAcceptingConnections()) {
-            logger.warning("❌ Connection rejected: server in startup phase");
-            session.sendMessage(new TextMessage("{\"type\":\"FORCE_LOGOUT\",\"reason\":\"server_startup\"}"));
-            session.close(CloseStatus.POLICY_VIOLATION);
-            return;
-        }
-
-        boolean isValidSession = userService.isSessionValid(userId, deviceId);
-
-        if (!isValidSession) {
-            logger.warning("❌ Connection rejected: invalid session for user " + userId);
-            session.sendMessage(new TextMessage("{\"type\":\"FORCE_LOGOUT\",\"reason\":\"session_invalid\"}"));
-            session.close(CloseStatus.POLICY_VIOLATION);
+        if (!userService.isSessionValid(userId, deviceId)) {
+            log.warn("Connection rejected: invalid session for userId={}", userId);
+            rejectSession(session, "session_invalid");
             return;
         }
 
         webSocketService.addSession(userId, session);
-        logger.info("✅ WebSocket connected for user: " + userId);
+        log.info("WebSocket connected: userId={}", userId);
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
         String userId = extractParameter(session, "userId");
-        String deviceId = extractParameter(session, "deviceId");
+        log.info("WebSocket closed: userId={}, code={}, reason={}",
+                userId, status.getCode(), status.getReason());
 
-        logger.info("🔴 WebSocket closed - User: " + userId + ", Code: " + status.getCode());
-
-        if (userId != null && !userId.isEmpty()) {
-            boolean isServerShutdown = (status.getCode() == 1001) ||
-                    ("Service shutdown".equals(status.getReason()));
+        if (!isBlank(userId)) {
+            boolean isServerShutdown = (status.getCode() == 1001)
+                    || "Service shutdown".equals(status.getReason());
             webSocketService.removeSession(userId, isServerShutdown);
         }
 
@@ -79,60 +72,92 @@ public class EstimateWebSocketHandler extends TextWebSocketHandler {
     }
 
     @Override
+    public void handleTransportError(WebSocketSession session, Throwable exception) throws Exception {
+        String userId = extractParameter(session, "userId");
+        log.error("Transport error: userId={}, message={}", userId, exception.getMessage(), exception);
+
+        closeSilently(session);
+    }
+
+    @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
         String payload = message.getPayload();
         String userId = extractParameter(session, "userId");
         String deviceId = extractParameter(session, "deviceId");
 
-        if (userId != null && deviceId != null) {
-            if (!userService.isSessionValid(userId, deviceId)) {
-                logger.warning("⚠️ Invalid session for user " + userId + ", closing");
-                session.sendMessage(new TextMessage("{\"type\":\"FORCE_LOGOUT\",\"reason\":\"session_expired\"}"));
-                session.close(CloseStatus.POLICY_VIOLATION);
-                return;
-            }
+        if (!isBlank(userId) && !isBlank(deviceId) && !userService.isSessionValid(userId, deviceId)) {
+            log.warn("Invalid session, closing: userId={}", userId);
+            rejectSession(session, "session_expired");
+            return;
         }
 
+        if (payload == null) return;
+
         if ("ping".equalsIgnoreCase(payload)) {
-            session.sendMessage(new TextMessage("pong"));
+            sendTextSilently(session, "pong");
             return;
         }
 
         if ("pong".equalsIgnoreCase(payload)) {
-            webSocketService.updateSessionLastPong(userId);
+            if (!isBlank(userId)) {
+                webSocketService.updateSessionLastPong(userId);
+            }
             return;
-        }
-    }
-
-    @Override
-    public void handleTransportError(WebSocketSession session, Throwable exception) throws Exception {
-        String userId = extractParameter(session, "userId");
-        logger.severe("🔴 Transport error for user " + userId + ": " + exception.getMessage());
-
-        if (session.isOpen()) {
-            session.close(CloseStatus.SERVER_ERROR);
         }
     }
 
     private String extractParameter(WebSocketSession session, String paramName) {
         try {
-            URI uri = session.getUri();
-            if (uri == null || uri.getQuery() == null) return null;
+            if (session.getUri() == null) return null;
 
-            for (String pair : uri.getQuery().split("&")) {
-                String[] keyValue = pair.split("=");
-                if (keyValue.length == 2 && paramName.equals(keyValue[0])) {
-                    return keyValue[1];
-                }
-            }
-            return null;
+            return UriComponentsBuilder.fromUri(session.getUri())
+                    .build()
+                    .getQueryParams()
+                    .getFirst(paramName);
         } catch (Exception e) {
-            logger.severe("Error extracting parameter: " + e.getMessage());
+            log.warn("Failed to extract '{}' from session URI: {}", paramName, e.getMessage());
             return null;
         }
     }
 
-    private boolean isAcceptingConnections() {
-        return !webSocketService.isServerJustStarted();
+    private void rejectSession(WebSocketSession session, String reason) {
+        String message = String.format("{\"type\":\"FORCE_LOGOUT\",\"reason\":\"%s\"}", reason);
+        try {
+            synchronized (session) {
+                if (session.isOpen()) {
+                    session.sendMessage(new TextMessage(message));
+                }
+            }
+        } catch (IOException e) {
+            log.debug("Failed to send rejection message: {}", e.getMessage());
+        } finally {
+            closeSilently(session);
+        }
+    }
+
+    private void sendTextSilently(WebSocketSession session, String text) {
+        try {
+            synchronized (session) {
+                if (session.isOpen()) {
+                    session.sendMessage(new TextMessage(text));
+                }
+            }
+        } catch (IOException e) {
+            log.debug("Failed to send text to session={}: {}", session.getId(), e.getMessage());
+        }
+    }
+
+    private void closeSilently(WebSocketSession session) {
+        try {
+            if (session != null && session.isOpen()) {
+                session.close(CloseStatus.POLICY_VIOLATION);
+            }
+        } catch (IOException e) {
+            log.debug("Failed to close session={}: {}", session.getId(), e.getMessage());
+        }
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.isEmpty();
     }
 }

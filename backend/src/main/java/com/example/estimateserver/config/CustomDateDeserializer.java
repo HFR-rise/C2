@@ -6,22 +6,32 @@ import com.fasterxml.jackson.databind.JsonDeserializer;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Date;
 
 @Component
 public class CustomDateDeserializer extends JsonDeserializer<Date> {
 
-    private static final SimpleDateFormat FORMATTER = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+    private static final DateTimeFormatter FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     @Override
-    public Date deserialize(JsonParser parser, DeserializationContext context) throws IOException {
+    public Date deserialize(JsonParser parser, DeserializationContext context)
+            throws IOException {
         String dateStr = parser.getText();
+
+        if (dateStr == null || dateStr.isBlank()) {
+            return null;
+        }
+
         try {
-            return FORMATTER.parse(dateStr);
-        } catch (ParseException e) {
-            throw new IOException("Cannot parse date: " + dateStr, e);
+            LocalDateTime ldt = LocalDateTime.parse(dateStr, FORMATTER);
+            return Date.from(ldt.atZone(ZoneId.systemDefault()).toInstant());
+        } catch (DateTimeParseException e) {
+            throw new IOException("Cannot parse date: '" + dateStr + "'", e);
         }
     }
 }

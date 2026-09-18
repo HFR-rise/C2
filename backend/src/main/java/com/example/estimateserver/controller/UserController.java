@@ -3,9 +3,12 @@ package com.example.estimateserver.controller;
 import com.example.estimateserver.model.User;
 import com.example.estimateserver.service.UserService;
 import com.example.estimateserver.service.WebSocketService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
 import java.util.Map;
 import java.util.Optional;
 
@@ -13,6 +16,11 @@ import java.util.Optional;
 @RequestMapping("/api/auth")
 @CrossOrigin(origins = "*")
 public class UserController {
+
+    private static final Logger log = LoggerFactory.getLogger(UserController.class);
+
+    private static final String KEY_ERROR = "error";
+    private static final String KEY_IS_VALID = "isValid";
 
     private final UserService userService;
     private final WebSocketService webSocketService;
@@ -23,70 +31,103 @@ public class UserController {
     }
 
     @PostMapping("/send-code")
-    public ResponseEntity<?> sendCode(@RequestBody Map<String, String> request) {
+    public ResponseEntity<Map<String, String>> sendCode(@RequestBody Map<String, String> request) {
+        String phoneNumber = request.get("phoneNumber");
+        if (isBlank(phoneNumber)) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of(KEY_ERROR, "Phone number is required"));
+        }
+
         try {
-            String phoneNumber = request.get("phoneNumber");
-            if (phoneNumber == null || phoneNumber.trim().isEmpty()) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Phone number is required"));
-            }
             userService.sendVerificationCode(phoneNumber);
             return ResponseEntity.ok().build();
         } catch (Exception e) {
+            log.error("Failed to send code to {}", maskPhone(phoneNumber), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", e.getMessage()));
+                    .body(Map.of(KEY_ERROR, "Failed to send verification code"));
         }
-    }
-
-    @GetMapping("/session/check")
-    public ResponseEntity<Map<String, Boolean>> checkSession(@RequestHeader("X-User-Id") String userId) {
-        Optional<User> userOpt = userService.findById(userId);
-        boolean isValid = userOpt.isPresent() && userOpt.get().getActiveSessionId() != null;
-        return ResponseEntity.ok(Map.of("isValid", isValid));
     }
 
     @PostMapping("/verify")
     public ResponseEntity<?> verify(@RequestBody Map<String, String> request) {
+        String phoneNumber = request.get("phoneNumber");
+        String code = request.get("code");
+        String deviceId = request.get("deviceId");
+
+        if (isBlank(phoneNumber)) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of(KEY_ERROR, "Phone number is required"));
+        }
+        if (isBlank(code)) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of(KEY_ERROR, "Code is required"));
+        }
+
         try {
-            String phoneNumber = request.get("phoneNumber");
-            String code = request.get("code");
-            String deviceId = request.get("deviceId");
-
-            if (phoneNumber == null || phoneNumber.trim().isEmpty()) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Phone number is required"));
-            }
-
-            if (code == null || code.trim().isEmpty()) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Code is required"));
-            }
-
-            // Пытаемся выполнить вход
             User user = userService.verifyCode(phoneNumber, code, deviceId);
             return ResponseEntity.ok(user);
-
         } catch (RuntimeException e) {
-            String message = e.getMessage();
-
-            // 409 Conflict - аккаунт уже используется на другом устройстве (ОНЛАЙН)
-            if (message.equals("Account already in use on another device")) {
-                System.err.println("❌ LOGIN REJECTED: " + message);
-                return ResponseEntity.status(HttpStatus.CONFLICT)
-                        .body(Map.of("error", message));
-            }
-
-            // 400 Bad Request - неверный код, истекший код, пользователь не найден
-            return ResponseEntity.badRequest()
-                    .body(Map.of("error", message));
-
+            return handleVerifyException(e);
         } catch (Exception e) {
+            log.error("Unexpected error in verify for {}", maskPhone(phoneNumber), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Internal server error: " + e.getMessage()));
+                    .body(Map.of(KEY_ERROR, "Internal server error"));
         }
+    }
+
+    private ResponseEntity<Map<String, String>> handleVerifyException(RuntimeException e) {
+        String message = e.getMessage();
+
+        if ("Account already in use on another device".equals(message)) {
+            log.warn("Login rejected: {}", message);
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(Map.of(KEY_ERROR, message));
+        }
+
+        log.debug("Verify failed: {}", message);
+        return ResponseEntity.badRequest()
+                .body(Map.of(KEY_ERROR, message != null ? message : "Verification failed"));
     }
 
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(@RequestHeader("X-User-Id") String userId) {
         userService.logout(userId);
         return ResponseEntity.ok().build();
+    }
+
+    @GetMapping("/session/check")
+    public ResponseEntity<Map<String, Boolean>> checkSession(@RequestHeader("X-User-Id") String userId) {
+        boolean isValid = userService.findById(userId)
+                .map(u -> u.getActiveSessionId() != null)
+                .orElse(false);
+        return ResponseEntity.ok(Map.of(KEY_IS_VALID, isValid));
+    }
+
+    @GetMapping("/session/check-with-device")
+    public ResponseEntity<Map<String, Boolean>> checkSessionWithDevice(
+            @RequestHeader("X-User-Id") String userId,
+            @RequestParam("deviceId") String deviceId) {
+
+        log.debug("Session check with device: userId={}, deviceId={}", userId, deviceId);
+
+        Optional<User> userOpt = userService.findById(userId);
+        if (userOpt.isEmpty()) {
+            log.debug("Session check: user not found: {}", userId);
+            return ResponseEntity.ok(Map.of(KEY_IS_VALID, false));
+        }
+
+        String activeSessionId = userOpt.get().getActiveSessionId();
+        boolean hasWebSocket = webSocketService.hasSession(userId);
+        boolean isValid = activeSessionId != null
+                && activeSessionId.equals(deviceId)
+                && hasWebSocket;
+
+        log.debug("Session check result: isValid={}, deviceMatches={}, hasWebSocket={}",
+                isValid,
+                activeSessionId != null && activeSessionId.equals(deviceId),
+                hasWebSocket);
+
+        return ResponseEntity.ok(Map.of(KEY_IS_VALID, isValid));
     }
 
     @GetMapping("/user/{userId}")
@@ -101,38 +142,12 @@ public class UserController {
         return ResponseEntity.ok("Server is working!");
     }
 
-    @GetMapping("/session/check-with-device")
-    public ResponseEntity<Map<String, Boolean>> checkSessionWithDevice(
-            @RequestHeader("X-User-Id") String userId,
-            @RequestParam("deviceId") String deviceId
-    ) {
-        System.out.println("=== SESSION CHECK WITH DEVICE ===");
-        System.out.println("userId: " + userId);
-        System.out.println("deviceId from request: " + deviceId);
+    private static boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
+    }
 
-        Optional<User> userOpt = userService.findById(userId);
-
-        if (userOpt.isEmpty()) {
-            System.out.println("❌ User not found!");
-            return ResponseEntity.ok(Map.of("isValid", false));
-        }
-
-        User user = userOpt.get();
-        String activeSessionId = user.getActiveSessionId();
-
-        System.out.println("activeSessionId in DB: " + activeSessionId);
-        System.out.println("deviceId equals? " + (activeSessionId != null && activeSessionId.equals(deviceId)));
-
-        boolean hasWebSocket = webSocketService.hasSession(userId);
-        System.out.println("hasWebSocket: " + hasWebSocket);
-
-        boolean isValid = activeSessionId != null &&
-                activeSessionId.equals(deviceId) &&
-                hasWebSocket;
-
-        System.out.println("FINAL isValid: " + isValid);
-        System.out.println("=================================");
-
-        return ResponseEntity.ok(Map.of("isValid", isValid));
+    private static String maskPhone(String phone) {
+        if (phone == null || phone.length() < 4) return "***";
+        return "*".repeat(phone.length() - 4) + phone.substring(phone.length() - 4);
     }
 }

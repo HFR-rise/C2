@@ -19,7 +19,7 @@ public class Material {
     private String userId;
 
     private Double quantity = 0.0;
-    private String unit = "шт";
+    private String unit = "??";
     private Double unitPrice = 0.0;
     private String category = "";
     private String notes = "";

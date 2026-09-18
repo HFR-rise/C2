@@ -2,22 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Разрешения -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Для Android 10 и ниже – только чтение внешнего хранилища -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
 
-    <!-- Для Android 9 и ниже – запись внешнего хранилища -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- Указываем, что камера НЕ обязательна -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
@@ -43,7 +39,6 @@
             </intent-filter>
         </activity>
 
-        <!-- File Provider для экспорта файлов -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -57,4 +52,3 @@
     </application>
 
 </manifest>
-    <!--        android:networkSecurityConfig="@xml/network_security_config"-->

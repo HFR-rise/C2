@@ -30,7 +30,6 @@ data class Material(
     val notes: String = "",
     val userId: String = ""
 ) {
-    // Стоимость материалов
     val totalPrice: Double
         get() = quantity * unitPrice
 }

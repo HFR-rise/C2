@@ -1,12 +1,23 @@
 package com.example.estimateserver.model;
 
-import jakarta.persistence.*;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Table;
+import jakarta.persistence.Temporal;
+import jakarta.persistence.TemporalType;
+import jakarta.persistence.Version;
+
 import java.util.Date;
+import java.util.Objects;
 import java.util.UUID;
 
 @Entity
 @Table(name = "users")
 public class User {
+
     @Id
     private String id = UUID.randomUUID().toString();
 
@@ -14,33 +25,61 @@ public class User {
     private String phoneNumber;
 
     private String name;
+
     private String verificationCode;
+
+    @Temporal(TemporalType.TIMESTAMP)
     private Date codeExpiresAt;
+
+    @Column(nullable = false)
     private boolean isVerified = false;
 
-    private Date createdAt = new Date();
-    private Date lastActiveAt = new Date();
+    @Temporal(TemporalType.TIMESTAMP)
+    @Column(nullable = false, updatable = false)
+    private Date createdAt;
+
+    @Temporal(TemporalType.TIMESTAMP)
+    @Column(nullable = false)
+    private Date lastActiveAt;
 
     @Column(name = "user_id")
     private String userId;
 
-    @Column(name = "active_session_id", nullable = true)
+    @Column(name = "active_session_id")
     private String activeSessionId;
 
-    @Column(name = "current_device_info", nullable = true)
+    @Column(name = "current_device_info")
     private String currentDeviceInfo;
 
-    @Column(name = "last_activity_at", nullable = true)
+    @Temporal(TemporalType.TIMESTAMP)
+    @Column(name = "last_activity_at")
     private Date lastActivityAt;
 
-    public User() {}
+    @Version
+    @Column(nullable = false)
+    private long version;
+
+    public User() {
+    }
 
     public User(String phoneNumber) {
         this.phoneNumber = phoneNumber;
         this.userId = this.id;
     }
 
-    // ===== ГЕТТЕРЫ И СЕТТЕРЫ =====
+    @PrePersist
+    void onCreate() {
+        Date now = new Date();
+        if (createdAt == null) createdAt = now;
+        if (lastActiveAt == null) lastActiveAt = now;
+        if (userId == null) userId = id;
+    }
+
+    @PreUpdate
+    void onUpdate() {
+        lastActiveAt = new Date();
+    }
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
 
@@ -76,4 +115,29 @@ public class User {
 
     public Date getLastActivityAt() { return lastActivityAt; }
     public void setLastActivityAt(Date lastActivityAt) { this.lastActivityAt = lastActivityAt; }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof User other)) return false;
+        return id != null && id.equals(other.id);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(id);
+    }
+
+    @Override
+    public String toString() {
+        return "User{id='" + id + "', phone='" + mask(phoneNumber) + "'}";
+    }
+
+    private static String mask(String phone) {
+        if (phone == null || phone.length() < 4) return "***";
+        return "*".repeat(phone.length() - 4) + phone.substring(phone.length() - 4);
+    }
 }

@@ -14,16 +14,12 @@ class UserPreferences @Inject constructor(
 
     private val KEY_PENDING_OPERATIONS = "pending_operations"
 
-
     companion object {
         private const val KEY_USER_ID = "user_id"
         private const val KEY_PHONE_NUMBER = "phone_number"
         private const val KEY_IS_LOGGED_IN = "is_logged_in"
     }
 
-    // В UserPreferences.kt добавьте:
-
-    // UserPreferences.kt - добавьте
     fun saveDeviceId(deviceId: String) {
         prefs.edit().putString("device_id", deviceId).apply()
     }

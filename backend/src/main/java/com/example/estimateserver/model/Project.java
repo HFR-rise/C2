@@ -39,9 +39,6 @@ public class Project {
     private String lastModifiedBy;
 
     @Column(nullable = false)
-    private String ownerId;  // ← ТОЛЬКО ЗДЕСЬ, ОДИН РАЗ!
-
-    @Column(nullable = false)
     private String userId;
 
     @Version
@@ -49,7 +46,6 @@ public class Project {
 
     public Project() {}
 
-    // Getters and Setters
     public String getShareStatus() { return shareStatus; }
     public void setShareStatus(String shareStatus) { this.shareStatus = shareStatus; }
 
@@ -103,9 +99,6 @@ public class Project {
 
     public String getLastModifiedBy() { return lastModifiedBy; }
     public void setLastModifiedBy(String lastModifiedBy) { this.lastModifiedBy = lastModifiedBy; }
-
-    public String getOwnerId() { return ownerId; }
-    public void setOwnerId(String ownerId) { this.ownerId = ownerId; }
 
     public Long getVersion() { return version; }
     public void setVersion(Long version) { this.version = version; }

@@ -1,6 +1,4 @@
-// app/src/main/java/com/example/myapplication/ui/components/UserNotFoundErrorDialog.kt
-
-package com.example.myapplication.ui.components
+package com.example.myapplication.ui.theme.components
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons

@@ -1,62 +1,94 @@
 package com.example.myapplication
 
 import android.content.Context
-import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Bundle
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Contacts
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.example.myapplication.ui.theme.*
+import com.example.myapplication.services.SyncManager
+import com.example.myapplication.services.WebSocketService
+import com.example.myapplication.ui.theme.AuthScreen
+import com.example.myapplication.ui.theme.ContactsScreen
+import com.example.myapplication.ui.theme.CreateProjectScreen
 import com.example.myapplication.ui.theme.FinanceAppTheme
-import dagger.hilt.android.AndroidEntryPoint
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.lifecycleScope
-import com.example.myapplication.viewmodels.ObjectsViewModel
-import com.example.myapplication.ui.screens.*
+import com.example.myapplication.ui.theme.MoveProjectWrapper
+import com.example.myapplication.ui.theme.ObjectsScreen
+import com.example.myapplication.ui.theme.PendingSharesScreen
+import com.example.myapplication.ui.theme.ProfileScreen
+import com.example.myapplication.ui.theme.ProjectScreenMode
 import com.example.myapplication.utils.UserPreferences
 import com.example.myapplication.viewmodels.AuthViewModel
-import com.example.myapplication.services.WebSocketService
-import com.example.myapplication.services.SyncManager
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+
+object Routes {
+    const val AUTH = "auth"
+    const val OBJECTS_ROOT = "objects_root"
+    const val OBJECTS_WITH_PARENT = "objects/{parentId}"
+    const val MOVE_PROJECT = "move_project/{projectId}/{currentObjectId}"
+    const val CONTACTS = "contacts"
+    const val MATERIALS_STORAGE = "materials_storage"
+    const val PROFILE = "profile"
+    const val VIEW_PROJECT = "view_project/{projectId}"
+    const val CREATE_PROJECT = "create_project/{objectId}"
+    const val EDIT_PROJECT = "edit_project/{projectId}"
+}
+
+private const val TAG = "MainActivity"
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
-    @Inject
-    lateinit var userPreferences: UserPreferences
-
-    @Inject
-    lateinit var webSocketService: WebSocketService
-
-    @Inject
-    lateinit var syncManager: SyncManager
+    @Inject lateinit var userPreferences: UserPreferences
+    @Inject lateinit var webSocketService: WebSocketService
+    @Inject lateinit var syncManager: SyncManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,7 +100,6 @@ class MainActivity : ComponentActivity() {
                 ) {
                     MainScreen(
                         userPreferences = userPreferences,
-                        webSocketService = webSocketService,
                         syncManager = syncManager
                     )
                 }
@@ -80,434 +111,291 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(
     userPreferences: UserPreferences,
-    webSocketService: WebSocketService,
     syncManager: SyncManager,
     authViewModel: AuthViewModel = hiltViewModel()
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val lifecycleScope = remember { lifecycleOwner.lifecycleScope }
-
-    var lastSelectedRoute by remember { mutableStateOf("objects_root") }
 
     val isLoggedIn by authViewModel.isLoggedIn.collectAsState()
-    val startDestination = if (isLoggedIn) "objects_root" else "auth"
 
-    LaunchedEffect(Unit) {
-        authViewModel.navigationEvent.collect { event ->
-            when (event) {
-                is AuthViewModel.NavigationEvent.NavigateToAuth -> {
-                    Log.e("MainScreen", "🎯 Navigate to AUTH")
-                    navController.navigate("auth") {
-                        popUpTo(0) { inclusive = true }
-                        launchSingleTop = true
-                    }
-                }
-                is AuthViewModel.NavigationEvent.NavigateToMain -> {
-                    Log.e("MainScreen", "🎯 Navigate to MAIN")
-                    navController.navigate("objects_root") {
-                        popUpTo("auth") { inclusive = true }
-                        launchSingleTop = true
-                    }
-                }
-            }
-        }
+    val lastSelectedRoute = remember(currentDestination?.route) {
+        resolveLastSelectedRoute(currentDestination?.route)
     }
-
 
     LaunchedEffect(isLoggedIn) {
-        Log.e("MainScreen", "🔥 isLoggedIn changed to: $isLoggedIn (navigation handled by events)")
-    }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(5000)
-            Log.e("MainScreen", "WebSocket connected: ${webSocketService.isConnected()}, screen: ${currentDestination?.route}")
+        val target = if (isLoggedIn) Routes.OBJECTS_ROOT else Routes.AUTH
+        navController.navigate(target) {
+            popUpTo(0) { inclusive = true }
+            launchSingleTop = true
         }
     }
 
-    LaunchedEffect(Unit) {
-        syncManager.onForceLogout = {
-            Log.w("MainScreen", "Force logout triggered by SyncManager on ${currentDestination?.route}")
-            lifecycleScope.launch {
-                Toast.makeText(context, "Сессия истекла", Toast.LENGTH_LONG).show()
-                authViewModel.forceLogout()
-            }
-        }
-    }
-
-    val connectivityManager = remember {
-        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    }
-
-    DisposableEffect(Unit) {
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                Log.d("MainScreen", "Network available, checking session...")
-                lifecycleScope.launch {
-                    val isValid = syncManager.checkCurrentSession()
-                    Log.d("MainScreen", "Session check after network available: $isValid")
-                }
-            }
-        }
-        connectivityManager.registerDefaultNetworkCallback(callback)
-        onDispose {
-            connectivityManager.unregisterNetworkCallback(callback)
-        }
-    }
-
-    LaunchedEffect(currentDestination) {
-        val route = currentDestination?.route
-        if (route != null && isLoggedIn) {
-            when {
-                route == "objects_root" || route.startsWith("objects/") -> {
-                    lastSelectedRoute = "objects_root"
-                }
-                route == "contacts" -> {
-                    lastSelectedRoute = "contacts"
-                }
-                route == "materials_storage" -> {
-                    lastSelectedRoute = "materials_storage"
-                }
-                route == "profile" -> {
-                    lastSelectedRoute = "profile"
-                }
-                else -> { }
-            }
-        }
-    }
+    MonitorNetworkConnection(syncManager)
 
     Scaffold(
         bottomBar = {
-            val currentRoute = currentDestination?.route
-
-            val shouldShowBottomBar = isLoggedIn &&
-                    currentRoute != null &&
-                    currentRoute != "auth" &&
-                    !currentRoute.startsWith("move_project/") &&
-                    !currentRoute.startsWith("create_project/") &&
-                    !currentRoute.startsWith("edit_project/") &&
-                    !currentRoute.startsWith("view_project/") &&
-                    !currentRoute.startsWith("project_detail/")
-
-            if (shouldShowBottomBar) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                        .background(
-                            brush = Brush.horizontalGradient(
-                                colors = listOf(
-                                    Color(0xFF4CAF50),
-                                    Color(0xFF2196F3),
-                                    Color(0xFF9C27B0)
-                                ),
-                                startX = 0f,
-                                endX = Float.POSITIVE_INFINITY
-                            )
-                        )
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxSize(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val items = listOf(
-                            BottomNavItem("Объекты", Icons.Default.Folder, "objects_root", Icons.Default.Folder),
-                            BottomNavItem("Контакты", Icons.Default.Contacts, "contacts", Icons.Default.Contacts),
-                            BottomNavItem("Общение", Icons.Default.Chat, "materials_storage", Icons.Default.Chat),
-                            BottomNavItem("Профиль", Icons.Default.Person, "profile", Icons.Default.Person)
-                        )
-
-                        items.forEach { item ->
-                            val isSelected = lastSelectedRoute == item.route
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable(
-                                        indication = null,
-                                        interactionSource = remember { MutableInteractionSource() }
-                                    ) {
-                                        lastSelectedRoute = item.route
-                                        navController.navigate(item.route) {
-                                            launchSingleTop = true
-                                            popUpTo("objects_root") { inclusive = false }
-                                        }
-                                    },
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    if (isSelected) item.selectedIcon else item.icon,
-                                    contentDescription = item.title,
-                                    modifier = Modifier.size(24.dp),
-                                    tint = if (isSelected) Color.White else Color.White.copy(alpha = 0.7f)
-                                )
-                                if (isSelected) {
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        item.title,
-                                        fontSize = 11.sp,
-                                        color = Color.White
-                                    )
-                                }
-                            }
-                        }
+            BottomNavigationBar(
+                currentRoute = currentDestination?.route,
+                lastSelectedRoute = lastSelectedRoute,
+                isLoggedIn = isLoggedIn,
+                onItemClick = { route ->
+                    navController.navigate(route) {
+                        launchSingleTop = true
+                        popUpTo(Routes.OBJECTS_ROOT) { inclusive = false }
                     }
                 }
-            }
+            )
         }
     ) { paddingValues ->
-        NavHost(
+        AppNavHost(
             navController = navController,
-            startDestination = startDestination,
+            startDestination = Routes.AUTH,
+            userPreferences = userPreferences,
+            authViewModel = authViewModel,
+            onLogout = authViewModel::logout,
             modifier = Modifier.padding(paddingValues)
+        )
+    }
+}
+
+private fun resolveLastSelectedRoute(route: String?): String = when {
+    route == null -> Routes.OBJECTS_ROOT
+    route == Routes.OBJECTS_ROOT || route.startsWith("objects/") -> Routes.OBJECTS_ROOT
+    route == Routes.CONTACTS -> Routes.CONTACTS
+    route == Routes.MATERIALS_STORAGE -> Routes.MATERIALS_STORAGE
+    route == Routes.PROFILE -> Routes.PROFILE
+    else -> Routes.OBJECTS_ROOT
+}
+
+@Composable
+private fun MonitorNetworkConnection(syncManager: SyncManager) {
+    val context = LocalContext.current
+
+    DisposableEffect(Unit) {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE)
+                as ConnectivityManager
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.d(TAG, "Network available")
+            }
+        }
+
+        connectivityManager.registerDefaultNetworkCallback(callback)
+        onDispose { connectivityManager.unregisterNetworkCallback(callback) }
+    }
+}
+
+@Composable
+private fun BottomNavigationBar(
+    currentRoute: String?,
+    lastSelectedRoute: String,
+    isLoggedIn: Boolean,
+    onItemClick: (String) -> Unit
+) {
+    if (!shouldShowBottomBar(currentRoute, isLoggedIn)) return
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .background(
+                brush = Brush.horizontalGradient(
+                    colors = listOf(
+                        Color(0xFF4CAF50),
+                        Color(0xFF2196F3),
+                        Color(0xFF9C27B0)
+                    )
+                )
+            )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            composable("auth") {
-                AuthScreen(
-                    navController = navController,
-                    onLoginSuccess = {
-                        authViewModel.refreshLoginState()
-                    }
-                )
-            }
-
-            composable("main_menu") {
-                MainMenuScreen(navController)
-            }
-
-            composable("objects_root") {
-                ObjectsScreen(
-                    navController = navController,
-                    parentObjectId = null,
-                    selectionMode = false,
-                    onObjectSelected = null,
-                    onObjectOpen = null,
-                    onNavigateBack = null,
-                    navigationStack = emptyList()
-                )
-            }
-
-            // Объекты - с родительским ID
-            composable(
-                route = "objects/{parentId}",
-                arguments = listOf(navArgument("parentId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val parentId = backStackEntry.arguments?.getString("parentId")
-                ObjectsScreen(
-                    navController = navController,
-                    parentObjectId = parentId,
-                    selectionMode = false,
-                    onObjectSelected = null,
-                    onObjectOpen = null,
-                    onNavigateBack = null,
-                    navigationStack = emptyList()
-                )
-            }
-
-            // Экран перемещения сметы
-            composable(
-                route = "move_project/{projectId}/{currentObjectId}",
-                arguments = listOf(
-                    navArgument("projectId") { type = NavType.StringType },
-                    navArgument("currentObjectId") {
-                        type = NavType.StringType
-                        defaultValue = "none"
-                    }
-                )
-            ) { backStackEntry ->
-                val projectId = backStackEntry.arguments?.getString("projectId") ?: ""
-                val currentObjectId = backStackEntry.arguments?.getString("currentObjectId")
-                val actualCurrentObjectId = if (currentObjectId == "none") null else currentObjectId
-
-                MoveProjectWrapper(
-                    navController = navController,
-                    projectId = projectId,
-                    currentObjectId = actualCurrentObjectId
-                )
-            }
-
-            // Детали проекта
-            composable(
-                route = "project_detail/{projectId}",
-                arguments = listOf(navArgument("projectId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val projectId = backStackEntry.arguments?.getString("projectId")
-                ProjectDetailScreen(navController)
-            }
-
-            // Контакты
-            composable("contacts") {
-                ContactsScreen(navController)
-            }
-
-            // Общение (Pending Shares)
-            composable("materials_storage") {
-                PendingSharesScreen(navController)
-            }
-
-            // Профиль
-            composable("profile") {
-                ProfileScreen(
-                    navController = navController,
-                    userPreferences = userPreferences,
-                    onLogout = {
-                        // ТОЛЬКО вызываем logout, навигация через событие
-                        authViewModel.logout()
-                    }
-                )
-            }
-
-            // Создание проекта (корневой)
-            composable("create_project_root") {
-                CreateProjectScreen(
-                    navController = navController,
-                    mode = ProjectScreenMode.CREATE,
-                    objectId = null,
-                    projectId = null
-                )
-            }
-
-            // Просмотр сметы
-            composable(
-                route = "view_project/{projectId}",
-                arguments = listOf(navArgument("projectId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val projectId = backStackEntry.arguments?.getString("projectId")
-                CreateProjectScreen(
-                    navController = navController,
-                    mode = ProjectScreenMode.VIEW,
-                    objectId = null,
-                    projectId = projectId
-                )
-            }
-
-            // Создание проекта внутри объекта
-            composable(
-                route = "create_project/{objectId}",
-                arguments = listOf(navArgument("objectId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val objectId = backStackEntry.arguments?.getString("objectId")
-                CreateProjectScreen(
-                    navController = navController,
-                    mode = ProjectScreenMode.CREATE,
-                    objectId = objectId,
-                    projectId = null
-                )
-            }
-
-            // Редактирование проекта
-            composable(
-                route = "edit_project/{projectId}",
-                arguments = listOf(navArgument("projectId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val projectId = backStackEntry.arguments?.getString("projectId")
-                CreateProjectScreen(
-                    navController = navController,
-                    mode = ProjectScreenMode.EDIT,
-                    objectId = null,
-                    projectId = projectId
+            BottomNavItems.items.forEach { item ->
+                BottomNavItemView(
+                    item = item,
+                    isSelected = lastSelectedRoute == item.route,
+                    onClick = { onItemClick(item.route) },
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
     }
 }
 
-data class BottomNavItem(
-    val title: String,
-    val icon: androidx.compose.ui.graphics.vector.ImageVector,
-    val route: String,
-    val selectedIcon: androidx.compose.ui.graphics.vector.ImageVector
-)
+private fun shouldShowBottomBar(currentRoute: String?, isLoggedIn: Boolean): Boolean {
+    if (!isLoggedIn || currentRoute == null) return false
+    if (currentRoute == Routes.AUTH) return false
+
+    val hiddenRoutes = listOf(
+        "move_project/",
+        "create_project",
+        "edit_project/",
+        "view_project/"
+    )
+    return hiddenRoutes.none { currentRoute.startsWith(it) }
+}
 
 @Composable
-fun MoveProjectWrapper(
-    navController: androidx.navigation.NavController,
-    projectId: String,
-    currentObjectId: String?
+private fun BottomNavItemView(
+    item: BottomNavItem,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    var selectedObjectId by remember { mutableStateOf<String?>(null) }
-    var selectedObjectName by remember { mutableStateOf<String?>(null) }
-    var showConfirmDialog by remember { mutableStateOf(false) }
-    val viewModel: ObjectsViewModel = hiltViewModel()
-
-    var navigationStack by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
-    var currentParentId by remember { mutableStateOf<String?>(null) }
-
-    val onObjectSelected: (String, String) -> Unit = { objectId, objectName ->
-        val finalObjectId = if (objectId == "root") {
-            val rootObjects = viewModel.objects.value
-            val rootObject = rootObjects.find { it.name == "Без объекта" }
-            rootObject?.id ?: run {
-                viewModel.createRootObjectIfNeeded()
-                viewModel.objects.value.find { it.name == "Без объекта" }?.id ?: ""
-            }
-        } else {
-            objectId
-        }
-
-        selectedObjectId = finalObjectId
-        selectedObjectName = if (objectId == "root") "Корневой объект" else objectName
-        showConfirmDialog = true
-    }
-
-    val onObjectOpen: (String, String) -> Unit = { objectId, objectName ->
-        if (currentParentId != null) {
-            val currentName = navigationStack.lastOrNull()?.second ?:
-            viewModel.objects.value.find { it.id == currentParentId }?.name ?: "Объекты"
-            navigationStack = navigationStack + (currentParentId!! to currentName)
-        }
-        currentParentId = objectId
-    }
-
-    val onNavigateBack: () -> Unit = {
-        if (navigationStack.isNotEmpty()) {
-            val last = navigationStack.last()
-            currentParentId = last.first
-            navigationStack = navigationStack.dropLast(1)
-        } else {
-            currentParentId = null
-        }
-    }
-
-    ObjectsScreen(
-        navController = navController,
-        parentObjectId = currentParentId,
-        selectionMode = true,
-        onObjectSelected = onObjectSelected,
-        onObjectOpen = onObjectOpen,
-        onNavigateBack = onNavigateBack,
-        navigationStack = navigationStack,
-        viewModel = viewModel
-    )
-
-    if (showConfirmDialog && selectedObjectId != null) {
-        AlertDialog(
-            onDismissRequest = { showConfirmDialog = false },
-            title = { Text("Переместить смету") },
-            text = {
-                Text(if (selectedObjectId == "root") "Вы уверены, что хотите переместить смету на главный экран?" else "Вы уверены, что хотите переместить смету в \"${selectedObjectName ?: "выбранный"}\"?")
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.moveProject(projectId, selectedObjectId!!)
-                        showConfirmDialog = false
-                        navController.navigateUp()
-                    }
-                ) {
-                    Text("Переместить")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfirmDialog = false }) {
-                    Text("Отмена")
-                }
-            }
+    Column(
+        modifier = modifier.clickable(
+            indication = null,
+            interactionSource = remember { MutableInteractionSource() },
+            onClick = onClick
+        ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = if (isSelected) item.selectedIcon else item.icon,
+            contentDescription = item.title,
+            modifier = Modifier.size(24.dp),
+            tint = if (isSelected) Color.White else Color.White.copy(alpha = 0.7f)
         )
+        if (isSelected) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = item.title,
+                fontSize = 11.sp,
+                color = Color.White
+            )
+        }
     }
+}
+
+@Composable
+private fun AppNavHost(
+    navController: NavHostController,
+    startDestination: String,
+    userPreferences: UserPreferences,
+    authViewModel: AuthViewModel,
+    onLogout: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    NavHost(
+        navController = navController,
+        startDestination = startDestination,
+        modifier = modifier
+    ) {
+        composable(Routes.AUTH) {
+            AuthScreen(
+                navController = navController,
+                viewModel = authViewModel
+            )
+        }
+
+        composable(Routes.OBJECTS_ROOT) {
+            ObjectsScreen(navController = navController, parentObjectId = null)
+        }
+
+        composable(
+            route = Routes.OBJECTS_WITH_PARENT,
+            arguments = listOf(navArgument("parentId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            ObjectsScreen(
+                navController = navController,
+                parentObjectId = backStackEntry.arguments?.getString("parentId")
+            )
+        }
+
+        composable(
+            route = Routes.MOVE_PROJECT,
+            arguments = listOf(
+                navArgument("projectId") { type = NavType.StringType },
+                navArgument("currentObjectId") {
+                    type = NavType.StringType
+                    defaultValue = "none"
+                }
+            )
+        ) { backStackEntry ->
+            val projectId = backStackEntry.arguments?.getString("projectId") ?: ""
+            val currentObjectId = backStackEntry.arguments?.getString("currentObjectId")
+                ?.takeIf { it != "none" }
+
+            MoveProjectWrapper(
+                navController = navController,
+                projectId = projectId,
+                currentObjectId = currentObjectId
+            )
+        }
+
+        composable(Routes.CONTACTS) {
+            ContactsScreen(navController)
+        }
+
+        composable(Routes.MATERIALS_STORAGE) {
+            PendingSharesScreen(navController)
+        }
+
+        composable(Routes.PROFILE) {
+            ProfileScreen(
+                navController = navController,
+                userPreferences = userPreferences,
+                onLogout = onLogout
+            )
+        }
+
+        composable(
+            route = Routes.VIEW_PROJECT,
+            arguments = listOf(navArgument("projectId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            CreateProjectScreen(
+                navController = navController,
+                mode = ProjectScreenMode.VIEW,
+                objectId = null,
+                projectId = backStackEntry.arguments?.getString("projectId")
+            )
+        }
+
+        composable(
+            route = Routes.CREATE_PROJECT,
+            arguments = listOf(navArgument("objectId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            CreateProjectScreen(
+                navController = navController,
+                mode = ProjectScreenMode.CREATE,
+                objectId = backStackEntry.arguments?.getString("objectId"),
+                projectId = null
+            )
+        }
+
+        composable(
+            route = Routes.EDIT_PROJECT,
+            arguments = listOf(navArgument("projectId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            CreateProjectScreen(
+                navController = navController,
+                mode = ProjectScreenMode.EDIT,
+                objectId = null,
+                projectId = backStackEntry.arguments?.getString("projectId")
+            )
+        }
+    }
+}
+
+data class BottomNavItem(
+    val title: String,
+    val icon: ImageVector,
+    val route: String,
+    val selectedIcon: ImageVector
+)
+
+object BottomNavItems {
+    val items = listOf(
+        BottomNavItem("Объекты", Icons.Default.Folder, Routes.OBJECTS_ROOT, Icons.Default.Folder),
+        BottomNavItem("Контакты", Icons.Default.Contacts, Routes.CONTACTS, Icons.Default.Contacts),
+        BottomNavItem("Общение", Icons.Default.Chat, Routes.MATERIALS_STORAGE, Icons.Default.Chat),
+        BottomNavItem("Профиль", Icons.Default.Person, Routes.PROFILE, Icons.Default.Person)
+    )
 }

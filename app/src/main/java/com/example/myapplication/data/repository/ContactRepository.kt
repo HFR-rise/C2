@@ -9,7 +9,8 @@ import com.example.myapplication.network.ApiService
 import com.example.myapplication.services.SyncManager
 import com.example.myapplication.utils.UserPreferences
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
+import retrofit2.Response
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,171 +23,140 @@ class ContactRepository @Inject constructor(
     private val userPreferences: UserPreferences
 ) {
 
+    private companion object {
+        const val TAG = "ContactRepository"
+    }
+
     fun getAllContacts(): Flow<List<Contact>> = contactDao.getAllContacts()
 
-    suspend fun addContact(contact: Contact): String {
-        // ===== КРИТИЧЕСКОЕ ЛОГИРОВАНИЕ =====
-        Log.e("ContactRepository", "!!! ADD CONTACT CALLED !!!")
-        Log.e("ContactRepository", "Contact name: '${contact.name}'")
-        Log.e("ContactRepository", "Contact id: '${contact.id}'")
-        Log.e("ContactRepository", "Contact userId: '${contact.userId}'")
-        // ===================================
+    fun getAllContactMethods(): Flow<List<ContactMethod>> =
+        contactMethodDao.getAllContactMethods()
 
-        val contactWithId = if (contact.id.isEmpty()) {
-            val newId = java.util.UUID.randomUUID().toString()
-            Log.d("ContactRepository", "Generated new ID: $newId")
-            contact.copy(id = newId)
-        } else {
-            contact
-        }
+    fun getContactMethods(contactId: String): Flow<List<ContactMethod>> =
+        contactMethodDao.getContactMethods(contactId)
+
+    suspend fun getContactMethodsOnce(contactId: String): List<ContactMethod> =
+        contactMethodDao.getContactMethodsOnce(contactId)
+
+    suspend fun getAllContactsSync(): List<Contact> =
+        contactDao.getAllContactsOnce()
+
+    suspend fun getContactsCount(): Int = contactDao.getContactsCount()
+
+    suspend fun addContact(contact: Contact): String {
+        val contactWithId = ensureId(contact)
 
         contactDao.insertContact(contactWithId)
-        Log.d("ContactRepository", "✅ Contact saved locally: ${contactWithId.name} (${contactWithId.id})")
+        Log.d(TAG, "Contact saved locally: ${contactWithId.id}")
 
-        val userId = userPreferences.getUserId()
-        Log.d("ContactRepository", "Current userId from preferences: '$userId'")
-        Log.d("ContactRepository", "Has internet connection: ${syncManager.hasInternetConnection()}")
-
-        if (userId == null) {
-            Log.e("ContactRepository", "❌ userId is NULL! Cannot sync to server!")
-            return contactWithId.id
-        }
-
-        if (!syncManager.hasInternetConnection()) {
-            Log.w("ContactRepository", "📱 No internet connection, contact queued for later sync")
-            syncManager.queueOperation("CREATE", "CONTACT", contactWithId.id, contactWithId)
-            return contactWithId.id
-        }
-
-        try {
-            Log.d("ContactRepository", "📤 Sending contact to server...")
-            Log.d("ContactRepository", "URL: /api/contacts")
-            Log.d("ContactRepository", "Header X-User-Id: $userId")
-            Log.d("ContactRepository", "Body: name=${contactWithId.name}, description=${contactWithId.description}")
-
-            val response = apiService.createContact(contactWithId, userId)
-
-            Log.d("ContactRepository", "Response code: ${response.code()}")
-
-            if (response.isSuccessful) {
-                val serverContact = response.body()
-                if (serverContact != null) {
-                    contactDao.updateContact(serverContact)
-                    Log.e("ContactRepository", "✅✅✅ CONTACT SYNCED TO SERVER SUCCESSFULLY! ✅✅✅")
-                    Log.d("ContactRepository", "Server returned id: ${serverContact.id}")
-                } else {
-                    Log.e("ContactRepository", "❌ Server returned null body")
-                }
-            } else {
-                Log.e("ContactRepository", "❌ Failed to sync contact: ${response.code()} ${response.message()}")
-                val errorBody = response.errorBody()?.string()
-                Log.e("ContactRepository", "Error body: $errorBody")
-                syncManager.queueOperation("CREATE", "CONTACT", contactWithId.id, contactWithId)
-            }
-        } catch (e: Exception) {
-            Log.e("ContactRepository", "❌ Exception during sync: ${e.message}", e)
-            syncManager.queueOperation("CREATE", "CONTACT", contactWithId.id, contactWithId)
-        }
+        syncToServer(
+            operation = "CREATE",
+            entityType = "CONTACT",
+            entity = contactWithId,
+            call = { apiService.createContact(it) },
+            onSuccess = { serverContact -> contactDao.updateContact(serverContact) }
+        )
 
         return contactWithId.id
     }
 
-    suspend fun updateContact(contact: Contact) {
-        Log.d("ContactRepository", "Update contact called: ${contact.name}")
-
-        contactDao.updateContact(contact)
-        Log.d("ContactRepository", "Contact updated locally: ${contact.name}")
-
-        val userId = userPreferences.getUserId()
-        if (userId != null && syncManager.hasInternetConnection()) {
-            try {
-                val response = apiService.updateContact(contact.id, contact, userId)
-                if (response.isSuccessful) {
-                    Log.d("ContactRepository", "Contact updated on server: ${contact.name}")
-                } else {
-                    syncManager.queueOperation("UPDATE", "CONTACT", contact.id, contact)
-                }
-            } catch (e: Exception) {
-                syncManager.queueOperation("UPDATE", "CONTACT", contact.id, contact)
-            }
-        } else if (userId != null) {
-            syncManager.queueOperation("UPDATE", "CONTACT", contact.id, contact)
-        }
-    }
-
-    suspend fun deleteContact(contact: Contact) {
-        Log.d("ContactRepository", "Delete contact called: ${contact.name}")
-
-        contactDao.deleteContact(contact)
-        Log.d("ContactRepository", "Contact deleted locally: ${contact.name}")
-
-        val userId = userPreferences.getUserId()
-        if (userId != null && syncManager.hasInternetConnection()) {
-            try {
-                val response = apiService.deleteContact(contact.id, userId)
-                if (response.isSuccessful) {
-                    Log.d("ContactRepository", "Contact deleted from server: ${contact.name}")
-                } else {
-                    syncManager.queueOperation("DELETE", "CONTACT", contact.id, contact)
-                }
-            } catch (e: Exception) {
-                syncManager.queueOperation("DELETE", "CONTACT", contact.id, contact)
-            }
-        } else if (userId != null) {
-            syncManager.queueOperation("DELETE", "CONTACT", contact.id, contact)
-        }
-    }
-
     suspend fun addContactMethod(method: ContactMethod): String {
-        Log.d("ContactRepository", "Add contact method called: ${method.methodType}")
-
-        val methodWithId = if (method.id.isEmpty()) {
-            method.copy(id = java.util.UUID.randomUUID().toString())
-        } else {
-            method
-        }
+        val methodWithId = ensureId(method)
 
         contactMethodDao.insertContactMethod(methodWithId)
-        Log.d("ContactRepository", "ContactMethod saved locally: ${methodWithId.methodType}")
+        Log.d(TAG, "ContactMethod saved locally: ${methodWithId.id}")
 
-        val userId = userPreferences.getUserId()
-        if (userId != null && syncManager.hasInternetConnection()) {
-            try {
-                val response = apiService.addContactMethod(methodWithId, userId)
-                if (response.isSuccessful) {
-                    Log.d("ContactRepository", "ContactMethod synced to server")
-                } else {
-                    syncManager.queueOperation("CREATE", "CONTACT_METHOD", methodWithId.id, methodWithId)
-                }
-            } catch (e: Exception) {
-                syncManager.queueOperation("CREATE", "CONTACT_METHOD", methodWithId.id, methodWithId)
-            }
-        } else if (userId != null) {
-            syncManager.queueOperation("CREATE", "CONTACT_METHOD", methodWithId.id, methodWithId)
-        }
+        syncToServer(
+            operation = "CREATE",
+            entityType = "CONTACT_METHOD",
+            entity = methodWithId,
+            call = { apiService.addContactMethod(it) }
+        )
 
         return methodWithId.id
+    }
+
+    suspend fun updateContact(contact: Contact) {
+        contactDao.updateContact(contact)
+
+        syncToServer(
+            operation = "UPDATE",
+            entityType = "CONTACT",
+            entity = contact,
+            call = { apiService.updateContact(it.id, it) }
+        )
     }
 
     suspend fun updateContactMethod(method: ContactMethod) {
         contactMethodDao.updateContactMethod(method)
     }
 
+    suspend fun deleteContact(contact: Contact) {
+        contactDao.deleteContact(contact)
+
+        syncToServer(
+            operation = "DELETE",
+            entityType = "CONTACT",
+            entity = contact,
+            call = { apiService.deleteContact(it.id) }
+        )
+    }
+
     suspend fun deleteContactMethod(method: ContactMethod) {
         contactMethodDao.deleteContactMethod(method)
     }
-
-    fun getContactMethods(contactId: String): Flow<List<ContactMethod>> =
-        contactMethodDao.getMethodsForContact(contactId)
-
-    suspend fun getContactsCount(): Int = contactDao.getContactsCount()
 
     suspend fun deleteAllContacts() {
         contactDao.deleteAll()
         contactMethodDao.deleteAll()
     }
 
-    suspend fun getAllContactsSync(): List<Contact> {
-        return contactDao.getAllContacts().first()
+    private fun <T : Any> ensureId(entity: T): T = when (entity) {
+        is Contact -> if (entity.id.isEmpty()) entity.copy(id = UUID.randomUUID().toString()) else entity
+        is ContactMethod -> if (entity.id.isEmpty()) entity.copy(id = UUID.randomUUID().toString()) else entity
+        else -> entity
+    } as T
+
+    private suspend fun <T : Any> syncToServer(
+        operation: String,
+        entityType: String,
+        entity: T,
+        call: suspend (T) -> Response<*>,
+        onSuccess: suspend (T) -> Unit = {}
+    ) {
+        if (userPreferences.getUserId() == null) {
+            Log.d(TAG, "No user — local only")
+            return
+        }
+
+        if (!syncManager.hasInternetConnection()) {
+            Log.d(TAG, "No network — queued $operation $entityType")
+            queueOperation(operation, entityType, entity)
+            return
+        }
+
+        try {
+            val response = call(entity)
+            if (response.isSuccessful) {
+                @Suppress("UNCHECKED_CAST")
+                response.body()?.let { body -> onSuccess(body as T) }
+                Log.d(TAG, "$operation $entityType synced")
+            } else {
+                Log.w(TAG, "Sync failed (${response.code()}) — queued")
+                queueOperation(operation, entityType, entity)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Sync exception: ${e.message} — queued")
+            queueOperation(operation, entityType, entity)
+        }
+    }
+
+    private suspend fun <T : Any> queueOperation(operation: String, entityType: String, entity: T) {
+        val entityId = when (entity) {
+            is Contact -> entity.id
+            is ContactMethod -> entity.id
+            else -> return
+        }
+        syncManager.queueOperation(operation, entityType, entityId, entity)
     }
 }

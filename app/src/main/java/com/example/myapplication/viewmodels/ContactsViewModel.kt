@@ -1,23 +1,27 @@
 package com.example.myapplication.viewmodels
 
 import android.util.Log
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.myapplication.data.models.Contact
 import com.example.myapplication.data.models.ContactMethod
 import com.example.myapplication.data.repository.ContactRepository
 import com.example.myapplication.services.SyncManager
 import com.example.myapplication.utils.FuzzySearch
+import com.example.myapplication.utils.PhoneUtils
 import com.example.myapplication.utils.UserPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-enum class SearchFilter(
-    val displayName: String
-) {
+enum class SearchFilter(val displayName: String) {
     BY_NAME("По имени"),
     BY_DESCRIPTION("По описанию"),
     BY_PHONE("Телефон"),
@@ -32,83 +36,200 @@ class ContactsViewModel @Inject constructor(
     private val repo: ContactRepository,
     private val syncManager: SyncManager,
     private val userPreferences: UserPreferences
-) : ViewModel() {
+) : BaseViewModel() {
+
+    private val TAG = "ContactsViewModel"
 
     private val _contacts = MutableStateFlow<List<Contact>>(emptyList())
-    val contacts: StateFlow<List<Contact>> = _contacts
+    val contacts: StateFlow<List<Contact>> = _contacts.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
     private val _currentFilter = MutableStateFlow(SearchFilter.BY_NAME)
-    val currentFilter: StateFlow<SearchFilter> = _currentFilter
+    val currentFilter: StateFlow<SearchFilter> = _currentFilter.asStateFlow()
 
     private val _contactMethodsCache = MutableStateFlow<Map<String, List<ContactMethod>>>(emptyMap())
+
     private val _duplicatesCache = MutableStateFlow<Map<String, List<String>>>(emptyMap())
-    val duplicatesCache: StateFlow<Map<String, List<String>>> = _duplicatesCache
+    val duplicatesCache: StateFlow<Map<String, List<String>>> = _duplicatesCache.asStateFlow()
 
     private val _duplicatesVersion = MutableStateFlow(0)
-    val duplicatesVersion: StateFlow<Int> = _duplicatesVersion
+    val duplicatesVersion: StateFlow<Int> = _duplicatesVersion.asStateFlow()
 
     private val _editingContact = MutableStateFlow<Contact?>(null)
-    val editingContact: StateFlow<Contact?> = _editingContact
+    val editingContact: StateFlow<Contact?> = _editingContact.asStateFlow()
 
     private val _showAddDialog = MutableStateFlow(false)
-    val showAddDialog: StateFlow<Boolean> = _showAddDialog
-
-    private val _isRefreshing = MutableStateFlow(false)
-    val isRefreshing: StateFlow<Boolean> = _isRefreshing
-
-    private val _errorMessage = MutableStateFlow<String?>(null)
-    val errorMessage: StateFlow<String?> = _errorMessage
+    val showAddDialog: StateFlow<Boolean> = _showAddDialog.asStateFlow()
 
     init {
         loadContacts()
-        loadAllContactMethods()
     }
 
-    private fun updateMethodsCache(contactId: String, methods: List<ContactMethod>) {
-        val currentCache = _contactMethodsCache.value.toMutableMap()
-        currentCache[contactId] = methods
-        _contactMethodsCache.value = currentCache
-        updateDuplicatesCache()
+    val filteredContacts: StateFlow<List<Contact>> = combine(
+        _contacts,
+        _searchQuery,
+        _currentFilter,
+        _contactMethodsCache
+    ) { contacts, query, filter, methodsCache ->
+        filterContacts(contacts, query, filter, methodsCache)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    private fun filterContacts(
+        contacts: List<Contact>,
+        query: String,
+        filter: SearchFilter,
+        methodsCache: Map<String, List<ContactMethod>>
+    ): List<Contact> {
+        if (query.isBlank()) return contacts
+
+        val normalizedQuery = query.lowercase().trim()
+
+        return when (filter) {
+            SearchFilter.BY_NAME -> FuzzySearch.filter(
+                items = contacts,
+                query = query,
+                textExtractor = { it.name },
+                maxDistance = getMaxDistance(query)
+            )
+            SearchFilter.BY_DESCRIPTION -> FuzzySearch.filter(
+                items = contacts,
+                query = query,
+                textExtractor = { it.description },
+                maxDistance = getMaxDistance(query)
+            )
+            SearchFilter.BY_PHONE -> filterByPhone(contacts, normalizedQuery, methodsCache)
+            SearchFilter.BY_TELEGRAM -> filterByMessenger(contacts, normalizedQuery, methodsCache, "telegram")
+            SearchFilter.BY_VK -> filterByMessenger(contacts, normalizedQuery, methodsCache, "vk")
+            SearchFilter.BY_EMAIL -> filterByEmail(contacts, normalizedQuery, methodsCache)
+            SearchFilter.BY_OTHER -> filterByOther(contacts, normalizedQuery, methodsCache)
+        }
     }
 
-    private fun normalizePhoneForSearch(phone: String): String {
-        if (phone.length >= 2) {
-            if (phone[0] == '+' && phone[1] != '7') {
-                return ""
+    private fun filterByPhone(
+        contacts: List<Contact>,
+        query: String,
+        methodsCache: Map<String, List<ContactMethod>>
+    ): List<Contact> {
+        if (query.isEmpty()) return contacts
+
+        if (query == "+") {
+            return contacts.filter { contact ->
+                methodsCache[contact.id]?.any { isPhoneMethod(it) } == true
             }
         }
-        val digitsOnly = phone.replace(Regex("[^\\d]"), "")
 
-        return when {
-            digitsOnly.startsWith("8") && digitsOnly.length == 11 -> "7" + digitsOnly.substring(1)
-            digitsOnly.startsWith("8") -> "7" + digitsOnly.substring(1)
-            digitsOnly.startsWith("7") -> digitsOnly
-            digitsOnly.length == 10 -> "7" + digitsOnly
-            digitsOnly.isNotEmpty() && digitsOnly.length <= 10 && digitsOnly.all { it.isDigit() } -> "7" + digitsOnly
-            else -> digitsOnly
+        val normalizedQueryPhone = PhoneUtils.normalize(query)
+        if (normalizedQueryPhone.isEmpty()) return emptyList()
+
+        return contacts.filter { contact ->
+            methodsCache[contact.id]?.any { method ->
+                isPhoneMethod(method) &&
+                        PhoneUtils.normalize(method.value).startsWith(normalizedQueryPhone)
+            } == true
+        }
+    }
+
+    private fun filterByMessenger(
+        contacts: List<Contact>,
+        query: String,
+        methodsCache: Map<String, List<ContactMethod>>,
+        messengerType: String
+    ): List<Contact> {
+        val queryWithoutAt = query.removePrefix("@")
+
+        return contacts.filter { contact ->
+            methodsCache[contact.id]?.any { method ->
+                method.methodType.lowercase().contains(messengerType) &&
+                        method.value.lowercase().removePrefix("@").contains(queryWithoutAt)
+            } == true
+        }
+    }
+
+    private fun filterByEmail(
+        contacts: List<Contact>,
+        query: String,
+        methodsCache: Map<String, List<ContactMethod>>
+    ): List<Contact> {
+        return contacts.filter { contact ->
+            methodsCache[contact.id]?.any { method ->
+                val type = method.methodType.lowercase()
+                (type.contains("email") || type.contains("почта")) &&
+                        method.value.lowercase().contains(query)
+            } == true
+        }
+    }
+
+    private fun filterByOther(
+        contacts: List<Contact>,
+        query: String,
+        methodsCache: Map<String, List<ContactMethod>>
+    ): List<Contact> {
+        return contacts.filter { contact ->
+            methodsCache[contact.id]?.any { method ->
+                val type = method.methodType.lowercase()
+                !isPhoneMethod(method) &&
+                        !type.contains("telegram") &&
+                        !type.contains("vk") &&
+                        !type.contains("email") &&
+                        !type.contains("почта") &&
+                        method.value.lowercase().removePrefix("@").contains(query)
+            } == true
+        }
+    }
+
+    private fun isPhoneMethod(method: ContactMethod): Boolean {
+        val type = method.methodType.lowercase()
+        return type.contains("телефон") || type.contains("phone")
+    }
+
+    private fun loadContacts() {
+        viewModelScope.launch {
+            repo.getAllContacts().collect { list ->
+                _contacts.value = list
+                loadAllContactMethods()
+            }
+        }
+    }
+
+    private fun loadAllContactMethods() {
+        viewModelScope.launch {
+            repo.getAllContactMethods().collect { allMethods ->
+                _contactMethodsCache.value = allMethods.groupBy { it.contactId }
+                updateDuplicatesCache()
+            }
+        }
+    }
+
+    private fun loadMethodsForContact(contactId: String) {
+        viewModelScope.launch {
+            try {
+                val methods = repo.getContactMethodsOnce(contactId)
+                val currentCache = _contactMethodsCache.value.toMutableMap()
+                currentCache[contactId] = methods
+                _contactMethodsCache.value = currentCache
+                updateDuplicatesCache()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error loading methods for $contactId: ${e.message}")
+            }
         }
     }
 
     private fun updateDuplicatesCache() {
         val methodsMap = _contactMethodsCache.value
-        val contactsList = _contacts.value
-
         val valueToContacts = mutableMapOf<String, MutableList<String>>()
 
-        contactsList.forEach { contact ->
-            val methods = methodsMap[contact.id] ?: emptyList()
-            methods.forEach { method ->
-                val methodType = method.methodType.lowercase()
-                val methodValue = method.value.lowercase()
-
-                val normalizedValue = when {
-                    methodType.contains("телефон") || methodType.contains("phone") -> {
-                        normalizePhoneForSearch(methodValue)
-                    }
-                    else -> methodValue
+        _contacts.value.forEach { contact ->
+            methodsMap[contact.id]?.forEach { method ->
+                val normalizedValue = if (isPhoneMethod(method)) {
+                    PhoneUtils.normalize(method.value)
+                } else {
+                    method.value.lowercase()
                 }
 
                 if (normalizedValue.isNotBlank()) {
@@ -118,14 +239,11 @@ class ContactsViewModel @Inject constructor(
         }
 
         val duplicates = mutableMapOf<String, MutableList<String>>()
-
-        valueToContacts.forEach { (_, contactIds) ->
-            if (contactIds.size > 1) {
-                contactIds.forEach { contactId ->
-                    val otherContacts = contactIds.filter { it != contactId }.toMutableList()
-                    if (otherContacts.isNotEmpty()) {
-                        duplicates.getOrPut(contactId) { mutableListOf() }.addAll(otherContacts)
-                    }
+        valueToContacts.filter { it.value.size > 1 }.forEach { (_, contactIds) ->
+            contactIds.forEach { contactId ->
+                val others = contactIds.filter { it != contactId }
+                if (others.isNotEmpty()) {
+                    duplicates.getOrPut(contactId) { mutableListOf() }.addAll(others)
                 }
             }
         }
@@ -134,159 +252,22 @@ class ContactsViewModel @Inject constructor(
         _duplicatesVersion.value += 1
     }
 
-    fun hasDuplicates(contactId: String): Boolean = _duplicatesCache.value.containsKey(contactId)
+    fun hasDuplicates(contactId: String): Boolean =
+        _duplicatesCache.value.containsKey(contactId)
 
-    fun getDuplicateContacts(contactId: String): List<String> = _duplicatesCache.value[contactId] ?: emptyList()
+    fun getDuplicateContacts(contactId: String): List<String> =
+        _duplicatesCache.value[contactId] ?: emptyList()
 
-    val filteredContacts: StateFlow<List<Contact>> = combine(
-        _contacts,
-        _searchQuery,
-        _currentFilter,
-        _contactMethodsCache
-    ) { contacts, query, filter, methodsCache ->
-        if (query.isBlank()) {
-            contacts
-        } else {
-            val normalizedQuery = query.lowercase().trim()
-
-            when (filter) {
-                SearchFilter.BY_NAME -> {
-                    FuzzySearch.filter(
-                        items = contacts,
-                        query = query,
-                        textExtractor = { it.name },
-                        maxDistance = getMaxDistance(query)
-                    )
-                }
-                SearchFilter.BY_DESCRIPTION -> {
-                    FuzzySearch.filter(
-                        items = contacts,
-                        query = query,
-                        textExtractor = { it.description },
-                        maxDistance = getMaxDistance(query)
-                    )
-                }
-                SearchFilter.BY_PHONE -> {
-                    when {
-                        normalizedQuery.isEmpty() -> contacts
-                        normalizedQuery == "+" -> {
-                            contacts.filter { contact ->
-                                val methods = methodsCache[contact.id] ?: emptyList()
-                                methods.any { method ->
-                                    val methodType = method.methodType.lowercase()
-                                    methodType.contains("телефон") || methodType.contains("phone")
-                                }
-                            }
-                        }
-                        else -> {
-                            contacts.filter { contact ->
-                                val methods = methodsCache[contact.id] ?: emptyList()
-                                methods.any { method ->
-                                    val methodType = method.methodType.lowercase()
-                                    val methodValue = method.value.lowercase()
-
-                                    if (methodType.contains("телефон") || methodType.contains("phone")) {
-                                        val normalizedValue = normalizePhoneForSearch(methodValue)
-                                        val normalizedQueryPhone = normalizePhoneForSearch(normalizedQuery)
-                                        normalizedQueryPhone.isNotEmpty() && normalizedValue.startsWith(normalizedQueryPhone)
-                                    } else false
-                                }
-                            }
-                        }
-                    }
-                }
-                SearchFilter.BY_TELEGRAM -> {
-                    contacts.filter { contact ->
-                        val methods = methodsCache[contact.id] ?: emptyList()
-                        methods.any { method ->
-                            val methodType = method.methodType.lowercase()
-                            val methodValue = method.value.lowercase()
-                            methodType.contains("telegram") && {
-                                val valueWithoutAt = methodValue.removePrefix("@")
-                                val queryWithoutAt = normalizedQuery.removePrefix("@")
-                                valueWithoutAt.contains(queryWithoutAt)
-                            }()
-                        }
-                    }
-                }
-                SearchFilter.BY_VK -> {
-                    contacts.filter { contact ->
-                        val methods = methodsCache[contact.id] ?: emptyList()
-                        methods.any { method ->
-                            val methodType = method.methodType.lowercase()
-                            val methodValue = method.value.lowercase()
-                            methodType.contains("vk") && {
-                                val valueWithoutAt = methodValue.removePrefix("@")
-                                val queryWithoutAt = normalizedQuery.removePrefix("@")
-                                valueWithoutAt.contains(queryWithoutAt)
-                            }()
-                        }
-                    }
-                }
-                SearchFilter.BY_EMAIL -> {
-                    contacts.filter { contact ->
-                        val methods = methodsCache[contact.id] ?: emptyList()
-                        methods.any { method ->
-                            val methodType = method.methodType.lowercase()
-                            val methodValue = method.value.lowercase()
-                            (methodType.contains("email") || methodType.contains("почта")) &&
-                                    methodValue.contains(normalizedQuery)
-                        }
-                    }
-                }
-                SearchFilter.BY_OTHER -> {
-                    contacts.filter { contact ->
-                        val methods = methodsCache[contact.id] ?: emptyList()
-                        methods.any { method ->
-                            val methodType = method.methodType.lowercase()
-                            val methodValue = method.value.lowercase()
-                            !methodType.contains("телефон") &&
-                                    !methodType.contains("phone") &&
-                                    !methodType.contains("telegram") &&
-                                    !methodType.contains("vk") &&
-                                    !methodType.contains("email") &&
-                                    !methodType.contains("почта") && {
-                                val valueWithoutAt = methodValue.removePrefix("@")
-                                valueWithoutAt.contains(normalizedQuery)
-                            }()
-                        }
-                    }
-                }
-            }
-        }
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyList()
-    )
-
-    private fun loadContacts() {
-        viewModelScope.launch {
-            repo.getAllContacts().collect { list ->
-                _contacts.value = list
-                list.forEach { contact ->
-                    loadMethodsForContact(contact.id)
-                }
-            }
-        }
+    fun updateSearchQuery(query: String) {
+        _searchQuery.value = query
     }
 
-    private fun loadMethodsForContact(contactId: String) {
-        viewModelScope.launch {
-            repo.getContactMethods(contactId).collect { methods ->
-                updateMethodsCache(contactId, methods)
-            }
-        }
+    fun updateSearchFilter(filter: SearchFilter) {
+        _currentFilter.value = filter
     }
 
-    private fun loadAllContactMethods() {
-        viewModelScope.launch {
-            _contacts.collect { contacts ->
-                contacts.forEach { contact ->
-                    loadMethodsForContact(contact.id)
-                }
-            }
-        }
+    fun clearSearch() {
+        _searchQuery.value = ""
     }
 
     private fun getMaxDistance(query: String): Int = when (query.length) {
@@ -296,21 +277,12 @@ class ContactsViewModel @Inject constructor(
     }
 
     fun addContactWithMethods(name: String, description: String, methods: List<ContactMethod>) {
-        viewModelScope.launch {
-            try {
-                Log.e("ContactsViewModel", "!!! ADD CONTACT WITH METHODS CALLED !!!")
-                Log.d("ContactsViewModel", "Name: $name")
-                Log.d("ContactsViewModel", "Description: $description")
-                Log.d("ContactsViewModel", "Methods count: ${methods.size}")
-
+        safeLaunch(
+            block = {
                 val userId = userPreferences.getUserId()
-                Log.e("ContactsViewModel", "Current userId: '$userId'")
+                    ?: throw IllegalStateException("Пользователь не авторизован")
 
-                if (userId == null) {
-                    Log.e("ContactsViewModel", "❌ Cannot create contact: userId is null!")
-                    _errorMessage.value = "Ошибка: пользователь не авторизован"
-                    return@launch
-                }
+                Log.d(TAG, "Adding contact: $name with ${methods.size} methods")
 
                 val contact = Contact(
                     name = name,
@@ -318,68 +290,91 @@ class ContactsViewModel @Inject constructor(
                     userId = userId
                 )
 
-                Log.e("ContactsViewModel", "Calling repo.addContact()...")
                 val contactId = repo.addContact(contact)
-                Log.e("ContactsViewModel", "✅✅✅ Contact created with id: $contactId ✅✅✅")
 
                 methods.forEach { method ->
-                    Log.d("ContactsViewModel", "Adding method: ${method.methodType} -> ${method.value}")
-                    val newMethod = ContactMethod(
-                        contactId = contactId,
-                        methodType = method.methodType,
-                        value = method.value,
-                        userId = userId
+                    repo.addContactMethod(
+                        ContactMethod(
+                            contactId = contactId,
+                            methodType = method.methodType,
+                            value = method.value,
+                            userId = userId
+                        )
                     )
-                    repo.addContactMethod(newMethod)
                 }
 
+                contactId
+            },
+            onSuccess = { contactId ->
+                Log.d(TAG, "✅ Contact created: $contactId")
                 _showAddDialog.value = false
-                loadContacts()
-                Log.e("ContactsViewModel", "✅ Contact creation completed successfully!")
-
-            } catch (e: Exception) {
-                Log.e("ContactsViewModel", "❌ Error creating contact: ${e.message}", e)
-                _errorMessage.value = "Ошибка: ${e.message}"
+            },
+            onError = { e ->
+                Log.e(TAG, "❌ Error creating contact: ${e.message}", e)
+                setError("Ошибка: ${e.message}")
             }
-        }
+        )
     }
 
     fun addContactMethod(contactId: String, methodType: String, value: String) {
-        viewModelScope.launch {
-            val method = ContactMethod(
-                contactId = contactId,
-                methodType = methodType,
-                value = value,
-                userId = userPreferences.getUserId() ?: ""
-            )
-            repo.addContactMethod(method)
-            loadMethodsForContact(contactId)
-        }
+        safeLaunch(
+            block = {
+                val method = ContactMethod(
+                    contactId = contactId,
+                    methodType = methodType,
+                    value = value,
+                    userId = userPreferences.getUserId() ?: ""
+                )
+                repo.addContactMethod(method)
+            },
+            onSuccess = { loadMethodsForContact(contactId) },
+            onError = { e -> setError("Ошибка добавления способа связи: ${e.message}") }
+        )
     }
 
     fun updateContactMethod(method: ContactMethod) {
-        viewModelScope.launch {
-            repo.updateContactMethod(method)
-            loadMethodsForContact(method.contactId)
-        }
+        safeLaunch(
+            block = { repo.updateContactMethod(method) },
+            onSuccess = { loadMethodsForContact(method.contactId) },
+            onError = { e -> setError("Ошибка обновления: ${e.message}") }
+        )
     }
 
     fun deleteContactMethod(method: ContactMethod) {
-        viewModelScope.launch {
-            repo.deleteContactMethod(method)
-            loadMethodsForContact(method.contactId)
-        }
+        safeLaunch(
+            block = { repo.deleteContactMethod(method) },
+            onSuccess = { loadMethodsForContact(method.contactId) },
+            onError = { e -> setError("Ошибка удаления: ${e.message}") }
+        )
     }
 
     fun updateContact(contact: Contact) {
-        viewModelScope.launch {
-            repo.updateContact(contact)
-            _editingContact.value = null
-        }
+        safeLaunch(
+            block = { repo.updateContact(contact) },
+            onSuccess = { _editingContact.value = null },
+            onError = { e -> setError("Ошибка обновления: ${e.message}") }
+        )
+    }
+
+    fun deleteContact(contact: Contact) {
+        safeLaunch(
+            block = { repo.deleteContact(contact) },
+            onSuccess = {
+                val currentCache = _contactMethodsCache.value.toMutableMap()
+                currentCache.remove(contact.id)
+                _contactMethodsCache.value = currentCache
+                updateDuplicatesCache()
+            },
+            onError = { e -> setError("Ошибка удаления: ${e.message}") }
+        )
     }
 
     fun startEditing(contact: Contact) {
         _editingContact.value = contact
+    }
+
+    fun clearEditing() {
+        _editingContact.value = null
     }
 
     fun showAddDialog() {
@@ -390,61 +385,34 @@ class ContactsViewModel @Inject constructor(
         _showAddDialog.value = false
     }
 
-    fun clearEditing() {
-        _editingContact.value = null
+    fun clearErrorMessage() {
+        setError(null)
     }
 
-    fun deleteContact(contact: Contact) {
-        viewModelScope.launch {
-            repo.deleteContact(contact)
-            val currentCache = _contactMethodsCache.value.toMutableMap()
-            currentCache.remove(contact.id)
-            _contactMethodsCache.value = currentCache
-            updateDuplicatesCache()
-        }
+    fun refreshData() {
+        safeLaunch(
+            showLoading = false,
+            block = {
+                val userId = userPreferences.getUserId()
+                    ?: throw IllegalStateException("Пользователь не авторизован")
+
+                if (syncManager.hasInternetConnection()) {
+                    setRefreshing(true)
+                    Log.d(TAG, "Refreshing contacts from server")
+                    syncManager.syncDataFromServer(userId)
+                } else {
+                    Log.d(TAG, "No internet, skipping refresh")
+                }
+            },
+            onSuccess = { setRefreshing(false) },
+            onError = { e ->
+                Log.e(TAG, "Error refreshing: ${e.message}")
+                setRefreshing(false)
+            }
+        )
     }
 
     fun getContactMethods(contactId: String): Flow<List<ContactMethod>> {
         return repo.getContactMethods(contactId)
-    }
-
-    fun refreshData() {
-        viewModelScope.launch {
-            if (_isRefreshing.value) return@launch
-            _isRefreshing.value = true
-
-            try {
-                val userId = userPreferences.getUserId()
-                if (userId != null && syncManager.hasInternetConnection()) {
-                    Log.d("ContactsViewModel", "Refreshing contacts from server")
-                    syncManager.syncDataFromServer(userId)
-                    delay(1000)
-                    loadContacts()
-                    loadAllContactMethods()
-                } else {
-                    Log.d("ContactsViewModel", "No internet or user not logged in, skipping refresh")
-                }
-            } catch (e: Exception) {
-                Log.e("ContactsViewModel", "Error refreshing data: ${e.message}")
-            } finally {
-                _isRefreshing.value = false
-            }
-        }
-    }
-
-    fun updateSearchQuery(query: String) {
-        _searchQuery.value = query
-    }
-
-    fun clearSearch() {
-        _searchQuery.value = ""
-    }
-
-    fun updateSearchFilter(filter: SearchFilter) {
-        _currentFilter.value = filter
-    }
-
-    fun clearErrorMessage() {
-        _errorMessage.value = null
     }
 }

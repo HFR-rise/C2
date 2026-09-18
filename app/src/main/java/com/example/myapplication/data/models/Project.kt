@@ -1,28 +1,24 @@
 package com.example.myapplication.data.models
 
 import androidx.room.Entity
-import androidx.room.ForeignKey
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import java.util.Date
 import java.util.UUID
 
 @Entity(
     tableName = "projects",
-//    foreignKeys = [
-//        ForeignKey(
-//            entity = ObjectModel::class,
-//            parentColumns = ["id"],
-//            childColumns = ["objectId"],
-//            onDelete = ForeignKey.CASCADE
-//        )
-//    ]
+    indices = [
+        Index(value = ["userId"]),
+        Index(value = ["objectId"])
+    ]
 )
 data class Project(
     @PrimaryKey
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val description: String = "",
-    val shareStatus: String = "PENDING",
+    val shareStatus: ShareStatus = ShareStatus.PENDING,
     val objectId: String? = null,
     val customerContactId: String? = null,
     val foremanContactId: String? = null,
@@ -34,10 +30,13 @@ data class Project(
     val status: ProjectStatus = ProjectStatus.ACTIVE,
     val totalBudget: Double = 0.0,
     val totalSpent: Double = 0.0,
-    val ownerId: String = "",  // ← Уже есть?
-    val userId: String = ""    // ← ДОБАВИТЬ ЭТУ СТРОКУ!
+    val userId: String = ""
 )
 
 enum class ProjectStatus {
     ACTIVE, COMPLETED, ARCHIVED
+}
+
+enum class ShareStatus {
+    PENDING, ACCEPTED, DECLINED
 }

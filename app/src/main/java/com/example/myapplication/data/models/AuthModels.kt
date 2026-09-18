@@ -1,5 +1,7 @@
 package com.example.myapplication.data.models
 
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
 
 data class SendCodeRequest(
@@ -12,8 +14,8 @@ data class VerifyCodeRequest(
     val phoneNumber: String,
     @SerializedName("code")
     val code: String,
-    @SerializedName("deviceId")  // ← ДОБАВЬТЕ ЭТУ СТРОКУ
-val deviceId: String? = null
+    @SerializedName("deviceId")
+    val deviceId: String? = null
 )
 
 data class UserResponse(
@@ -31,13 +33,13 @@ data class UserResponse(
 
 data class SyncMessage(
     @SerializedName("type")
-    val type: String, // CREATE, UPDATE, DELETE, SHARE
+    val type: String,
     @SerializedName("entityType")
-    val entityType: String, // PROJECT, MATERIAL, WORK_ITEM, CONTACT, OBJECT
+    val entityType: String,
     @SerializedName("entityId")
     val entityId: String,
     @SerializedName("data")
-    val data: Any?,
+    val data: JsonElement?,
     @SerializedName("userId")
     val userId: String,
     @SerializedName("timestamp")

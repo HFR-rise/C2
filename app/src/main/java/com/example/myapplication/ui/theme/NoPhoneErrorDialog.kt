@@ -1,5 +1,3 @@
-// NoPhoneErrorDialog.kt - новый файл
-
 package com.example.myapplication.ui.components
 
 import androidx.compose.foundation.layout.*

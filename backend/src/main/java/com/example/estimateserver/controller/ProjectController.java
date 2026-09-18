@@ -4,8 +4,12 @@ import com.example.estimateserver.model.Material;
 import com.example.estimateserver.model.Project;
 import com.example.estimateserver.model.WorkItem;
 import com.example.estimateserver.service.SyncService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -15,6 +19,8 @@ import java.util.Optional;
 @CrossOrigin(origins = "*")
 public class ProjectController {
 
+    private static final Logger log = LoggerFactory.getLogger(ProjectController.class);
+
     private final SyncService syncService;
 
     public ProjectController(SyncService syncService) {
@@ -23,8 +29,7 @@ public class ProjectController {
 
     @GetMapping("/pending/{userId}")
     public ResponseEntity<List<Project>> getPendingShares(@PathVariable String userId) {
-        List<Project> projects = syncService.getPendingProjectsForUser(userId);
-        return ResponseEntity.ok(projects);
+        return ResponseEntity.ok(syncService.getPendingProjectsForUser(userId));
     }
 
     @PostMapping("/{projectId}/accept")
@@ -41,10 +46,28 @@ public class ProjectController {
         return ResponseEntity.ok().build();
     }
 
+    @PostMapping("/{projectId}/share")
+    public ResponseEntity<Void> shareProject(@PathVariable String projectId,
+                                             @RequestBody Map<String, String> request,
+                                             @RequestHeader("X-User-Id") String userId) {
+        String phoneNumber = request.get("phoneNumber");
+        syncService.shareProjectWithUser(projectId, phoneNumber, userId);
+        return ResponseEntity.ok().build();
+    }
+
+    @GetMapping("/shared/{userId}")
+    public ResponseEntity<List<Project>> getSharedProjects(@PathVariable String userId) {
+        return ResponseEntity.ok(syncService.getProjectsSharedWithUser(userId));
+    }
+
     @GetMapping
     public ResponseEntity<List<Project>> getAllProjects(@RequestHeader("X-User-Id") String userId) {
-        List<Project> projects = syncService.getProjectsForUser(userId);
-        return ResponseEntity.ok(projects);
+        return ResponseEntity.ok(syncService.getProjectsForUser(userId));
+    }
+
+    @GetMapping("/user/{userId}")
+    public ResponseEntity<List<Project>> getProjectsForUser(@PathVariable String userId) {
+        return ResponseEntity.ok(syncService.getProjectsForUser(userId));
     }
 
     @GetMapping("/{id}")
@@ -55,46 +78,23 @@ public class ProjectController {
             return ResponseEntity.notFound().build();
         }
         if (!syncService.hasAccessToProject(id, userId)) {
-            return ResponseEntity.status(403).build();
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         return ResponseEntity.ok(project.get());
     }
 
-    // ===== ИСПРАВЛЕННЫЙ МЕТОД =====
     @PostMapping
-    public ResponseEntity<Project> createProject(@RequestBody Project project,
-                                                 @RequestHeader("X-User-Id") String userId) {
+    public ResponseEntity<Project> createOrUpdateProject(@RequestBody Project project,
+                                                         @RequestHeader("X-User-Id") String userId) {
         try {
-            System.out.println("=== CREATE/UPDATE PROJECT ===");
-            System.out.println("Project ID: " + project.getId());
-            System.out.println("User ID: " + userId);
-
-            // Очищаем userId из тела запроса (доверяем заголовку)
             project.setUserId(null);
 
-            // Проверяем, существует ли проект
-            Optional<Project> existing = syncService.getProject(project.getId());
-
-            Project result;
-            if (existing.isPresent()) {
-                // ✅ ОБНОВЛЯЕМ СУЩЕСТВУЮЩИЙ ПРОЕКТ
-                System.out.println("Project exists, updating...");
-                project.setUserId(existing.get().getUserId());
-                result = syncService.updateProject(project, userId);
-                System.out.println("✅ Project updated: " + result.getId());
-            } else {
-                // ✅ СОЗДАЁМ НОВЫЙ ПРОЕКТ
-                System.out.println("Project does not exist, creating...");
-                result = syncService.createProject(project, userId);
-                System.out.println("✅ Project created: " + result.getId());
-            }
-
+            Project result = syncService.saveProject(project, userId);
+            log.info("Project saved: {} by user {}", result.getId(), userId);
             return ResponseEntity.ok(result);
-
         } catch (Exception e) {
-            System.err.println("❌ Error in createProject: " + e.getMessage());
-            e.printStackTrace();
-            return ResponseEntity.status(500).build();
+            log.error("Error saving project {}: {}", project.getId(), e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
 
@@ -118,7 +118,7 @@ public class ProjectController {
     public ResponseEntity<List<Material>> getMaterials(@PathVariable String projectId,
                                                        @RequestHeader("X-User-Id") String userId) {
         if (!syncService.hasAccessToProject(projectId, userId)) {
-            return ResponseEntity.status(403).build();
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         return ResponseEntity.ok(syncService.getMaterials(projectId));
     }
@@ -127,29 +127,8 @@ public class ProjectController {
     public ResponseEntity<List<WorkItem>> getWorkItems(@PathVariable String projectId,
                                                        @RequestHeader("X-User-Id") String userId) {
         if (!syncService.hasAccessToProject(projectId, userId)) {
-            return ResponseEntity.status(403).build();
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         return ResponseEntity.ok(syncService.getWorkItems(projectId));
-    }
-
-    @GetMapping("/user/{userId}")
-    public ResponseEntity<List<Project>> getProjectsForUser(@PathVariable String userId) {
-        List<Project> projects = syncService.getProjectsForUser(userId);
-        return ResponseEntity.ok(projects);
-    }
-
-    @PostMapping("/{projectId}/share")
-    public ResponseEntity<Void> shareProject(@PathVariable String projectId,
-                                             @RequestBody Map<String, String> request,
-                                             @RequestHeader("X-User-Id") String userId) {
-        String phoneNumber = request.get("phoneNumber");
-        syncService.shareProjectWithUser(projectId, phoneNumber, userId);
-        return ResponseEntity.ok().build();
-    }
-
-    @GetMapping("/shared/{userId}")
-    public ResponseEntity<List<Project>> getSharedProjects(@PathVariable String userId) {
-        List<Project> projects = syncService.getProjectsSharedWithUser(userId);
-        return ResponseEntity.ok(projects);
     }
 }

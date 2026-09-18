@@ -1,17 +1,18 @@
-// ShareViewModel.kt - новый файл
-
 package com.example.myapplication.viewmodels
 
 import android.util.Log
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.myapplication.data.models.Contact
 import com.example.myapplication.data.models.ContactMethod
+import com.example.myapplication.services.ShareException
 import com.example.myapplication.services.SyncManager
+import com.example.myapplication.utils.PhoneUtils
 import com.example.myapplication.utils.UserPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -19,108 +20,116 @@ import javax.inject.Inject
 class ShareViewModel @Inject constructor(
     private val syncManager: SyncManager,
     private val userPreferences: UserPreferences
-) : ViewModel() {
+) : BaseViewModel() {
+
+    private companion object {
+        const val TAG = "ShareViewModel"
+        const val MIN_PHONE_LENGTH = 11
+    }
 
     private val _sharingState = MutableStateFlow<SharingState>(SharingState.Idle)
-    val sharingState: StateFlow<SharingState> = _sharingState
+    val sharingState: StateFlow<SharingState> = _sharingState.asStateFlow()
 
-    private val _errorMessage = MutableStateFlow<String?>(null)
-    val errorMessage: StateFlow<String?> = _errorMessage
+    private var shareJob: Job? = null
 
     fun shareProjectWithContact(
         projectId: String,
-        projectName: String,
         contact: Contact,
         contactMethods: List<ContactMethod>
     ) {
-        viewModelScope.launch {
+        if (shareJob?.isActive == true) {
+            Log.d(TAG, "Share already in progress, skipping")
+            return
+        }
+
+        shareJob = viewModelScope.launch {
             _sharingState.value = SharingState.Loading
 
             try {
-                // 1. Находим номер телефона в способах связи
-                val phoneMethod = contactMethods.find { method ->
-                    method.methodType.contains("телефон", ignoreCase = true) ||
-                            method.methodType.contains("phone", ignoreCase = true)
-                }
+                val phoneNumber = extractPhoneNumber(contact, contactMethods)
+                    ?: throw ShareException.InvalidPhone()
 
-                if (phoneMethod == null) {
-                    Log.e("ShareViewModel", "Contact has no phone number: ${contact.name}")
-                    _errorMessage.value = "NO_PHONE"
-                    _sharingState.value = SharingState.Error("У контакта нет номера телефона")
-                    return@launch
-                }
-
-                val phoneNumber = normalizePhoneNumber(phoneMethod.value)
-
-                if (phoneNumber.isBlank()) {
-                    Log.e("ShareViewModel", "Invalid phone number: ${phoneMethod.value}")
-                    _errorMessage.value = "INVALID_PHONE"
-                    _sharingState.value = SharingState.Error("Неверный формат номера телефона")
-                    return@launch
-                }
-
-                Log.d("ShareViewModel", "Sharing project $projectId with phone: $phoneNumber")
-
-                // 2. Отправляем запрос на сервер
                 val userId = userPreferences.getUserId()
-                if (userId == null) {
-                    _sharingState.value = SharingState.Error("Пользователь не авторизован")
-                    return@launch
-                }
+                    ?: throw ShareException.NoPermission()
 
-                val result = syncManager.shareProject(projectId, phoneNumber, userId)
+                Log.d(TAG, "Sharing project $projectId with phone: ${maskPhone(phoneNumber)}")
 
-                if (result.isSuccess) {
-                    Log.d("ShareViewModel", "Project shared successfully")
-                    _sharingState.value = SharingState.Success(contact)
-                } else {
-                    val error = result.exceptionOrNull()?.message ?: "Неизвестная ошибка"
-                    Log.e("ShareViewModel", "Share failed: $error")
+                val result = syncManager.shareProject(projectId, phoneNumber)
 
-                    when {
-                        error.contains("не найден") -> {
-                            _errorMessage.value = "USER_NOT_FOUND"
-                            _sharingState.value = SharingState.Error("Пользователь не найден")
+                result.fold(
+                    onSuccess = {
+                        Log.d(TAG, "✅ Project shared")
+                        _sharingState.value = SharingState.Success(contact)
+                    },
+                    onFailure = { e ->
+                        val errorType = when (e) {
+                            is ShareException.UserNotFound -> ShareErrorType.USER_NOT_FOUND
+                            is ShareException.InvalidPhone -> ShareErrorType.INVALID_PHONE
+                            is ShareException.NoPermission -> ShareErrorType.NO_PERMISSION
+                            else -> ShareErrorType.OTHER
                         }
-                        error.contains("Нет прав") -> {
-                            _errorMessage.value = "NO_PERMISSION"
-                            _sharingState.value = SharingState.Error("У вас нет прав для расшаривания этой сметы")
-                        }
-                        else -> {
-                            _errorMessage.value = "GENERIC_ERROR"
-                            _sharingState.value = SharingState.Error(error)
-                        }
+                        Log.e(TAG, "Share failed: ${e.message}")
+                        _sharingState.value = SharingState.Error(errorType, e.message)
                     }
-                }
+                )
 
+            } catch (e: ShareException.UserNotFound) {
+                _sharingState.value = SharingState.Error(ShareErrorType.USER_NOT_FOUND, e.message)
+            } catch (e: ShareException.InvalidPhone) {
+                _sharingState.value = SharingState.Error(ShareErrorType.NO_PHONE, "У контакта нет номера телефона")
+            } catch (e: ShareException.NoPermission) {
+                _sharingState.value = SharingState.Error(ShareErrorType.OTHER, "Пользователь не авторизован")
             } catch (e: Exception) {
-                Log.e("ShareViewModel", "Exception during share: ${e.message}")
-                _sharingState.value = SharingState.Error("Ошибка: ${e.message}")
-                _errorMessage.value = "EXCEPTION"
+                Log.e(TAG, "Unexpected error: ${e.message}", e)
+                _sharingState.value = SharingState.Error(ShareErrorType.OTHER, "Ошибка: ${e.message}")
             }
         }
     }
 
-    fun resetState() {
-        _sharingState.value = SharingState.Idle
-        _errorMessage.value = null
+    private fun extractPhoneNumber(
+        contact: Contact,
+        methods: List<ContactMethod>
+    ): String? {
+        val phoneMethod = methods
+            .filter { it.contactId == contact.id }
+            .firstOrNull { isPhoneMethod(it) }
+            ?: return null
+
+        val normalized = PhoneUtils.normalize(phoneMethod.value)
+        return normalized.takeIf { it.length >= MIN_PHONE_LENGTH }
     }
 
-    private fun normalizePhoneNumber(phone: String): String {
-        val digitsOnly = phone.replace(Regex("[^\\d]"), "")
+    private fun isPhoneMethod(method: ContactMethod): Boolean {
+        val type = method.methodType.lowercase()
+        return type.contains("телефон") || type.contains("phone")
+    }
 
-        return when {
-            digitsOnly.startsWith("8") && digitsOnly.length == 11 -> "7" + digitsOnly.substring(1)
-            digitsOnly.startsWith("7") && digitsOnly.length == 11 -> digitsOnly
-            digitsOnly.length == 10 -> "7" + digitsOnly
-            else -> digitsOnly
-        }
+    private fun maskPhone(phone: String): String =
+        if (phone.length > 4) phone.take(phone.length - 4) + "****" else "****"
+
+    fun resetState() {
+        shareJob?.cancel()
+        shareJob = null
+        _sharingState.value = SharingState.Idle
     }
 }
 
 sealed class SharingState {
-    object Idle : SharingState()
-    object Loading : SharingState()
+    data object Idle : SharingState()
+    data object Loading : SharingState()
     data class Success(val contact: Contact) : SharingState()
-    data class Error(val message: String) : SharingState()
+
+    data class Error(
+        val type: ShareErrorType,
+        val message: String?
+    ) : SharingState()
+}
+
+enum class ShareErrorType {
+    NO_PHONE,
+    INVALID_PHONE,
+    UNAUTHORIZED,
+    USER_NOT_FOUND,
+    NO_PERMISSION,
+    OTHER
 }

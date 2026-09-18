@@ -1,23 +1,41 @@
 package com.example.myapplication.services
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.os.Build
 import android.util.Log
-import com.example.myapplication.data.database.*
-import com.example.myapplication.data.models.*
+import com.example.myapplication.BuildConfig
+import com.example.myapplication.data.database.ContactDao
+import com.example.myapplication.data.database.ContactMethodDao
+import com.example.myapplication.data.database.MaterialDao
+import com.example.myapplication.data.database.ObjectDao
+import com.example.myapplication.data.database.ProjectDao
+import com.example.myapplication.data.database.WorkItemDao
+import com.example.myapplication.data.models.Contact
+import com.example.myapplication.data.models.ContactMethod
+import com.example.myapplication.data.models.Material
+import com.example.myapplication.data.models.ObjectModel
+import com.example.myapplication.data.models.Project
+import com.example.myapplication.data.models.SyncMessage
+import com.example.myapplication.data.models.WorkItem
+import com.example.myapplication.utils.NetworkUtils
 import com.example.myapplication.utils.UserPreferences
 import com.google.gson.Gson
-import com.google.gson.GsonBuilder
-import com.google.gson.JsonDeserializer
-import kotlinx.coroutines.*
-import okhttp3.*
-import okhttp3.logging.HttpLoggingInterceptor
-import java.text.SimpleDateFormat
-import java.util.*
-import java.util.concurrent.TimeUnit
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 
 @Singleton
@@ -29,138 +47,102 @@ class WebSocketService @Inject constructor(
     private val contactDao: ContactDao,
     private val contactMethodDao: ContactMethodDao,
     private val objectDao: ObjectDao,
-    private val context: Context
+    @ApplicationContext private val context: Context,
+    private val gson: Gson,
+    @Named("websocket") private val okHttpClient: OkHttpClient,
+    private val networkUtils: NetworkUtils
 ) {
-    private val tag = "WebSocketService"
-
-    private val gson = GsonBuilder()
-        .setDateFormat("yyyy-MM-dd HH:mm:ss")
-        .registerTypeAdapter(Date::class.java, JsonDeserializer { json, _, _ ->
-            try {
-                val dateStr = json.asString
-                val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                format.parse(dateStr) ?: Date()
-            } catch (e: Exception) {
-                try {
-                    val timestamp = json.asLong
-                    Date(timestamp)
-                } catch (e2: Exception) {
-                    try {
-                        val doubleValue = json.asDouble
-                        val timestamp = doubleValue.toLong()
-                        Date(timestamp)
-                    } catch (e3: Exception) {
-                        Log.e(tag, "Failed to parse date: ${json}")
-                        Date()
-                    }
-                }
-            }
-        })
-        .create()
-
-    private var webSocket: WebSocket? = null
-    private var isConnected = false
-    private var reconnectAttempts = 0
-    private val maxReconnectAttempts = 20
-
-    private var reconnectJob: Job? = null
-    private var isReconnecting = false
-    private var currentUserId: String? = null
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .addInterceptor(HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
-        })
-        .build()
+    private companion object {
+        const val TAG = "WebSocketService"
+        const val MAX_RECONNECT_ATTEMPTS = 20
+        const val RECONNECT_BASE_DELAY_MS = 2_000L
+        const val MAX_RECONNECT_DELAY_MS = 60_000L
+    }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    private var webSocket: WebSocket? = null
+
+    @Volatile private var isConnected = false
+    @Volatile private var isReconnecting = false
+    @Volatile private var currentUserId: String? = null
+
+    private var reconnectJob: Job? = null
+    private var reconnectAttempts = 0
+
+    private val reconnectGuard = AtomicBoolean(false)
 
     var onForceLogout: (() -> Unit)? = null
 
     fun connect(userId: String) {
-        Log.e(tag, "🔌🔌🔌 connect() CALLED for user: $userId 🔌🔌🔌")
-
-        if (isConnected) {
-            Log.d(tag, "Already connected, disconnecting first...")
-            disconnect()
-        }
-
         if (userId.isEmpty()) {
-            Log.e(tag, "Cannot connect: userId is empty")
+            Log.w(TAG, "connect: empty userId")
             return
         }
 
+        if (isConnected) {
+            Log.d(TAG, "Already connected, reconnecting")
+            disconnect()
+        }
+
         val deviceId = userPreferences.getDeviceId()
-        if (deviceId == null || deviceId.isEmpty()) {
-            Log.e(tag, "Cannot connect: deviceId is null or empty")
+        if (deviceId.isNullOrEmpty()) {
+            Log.w(TAG, "connect: no deviceId")
             return
         }
 
         currentUserId = userId
-        Log.d(tag, "Connecting WebSocket for user: $userId, device: $deviceId")
+        Log.d(TAG, "Connecting WebSocket for user=$userId device=$deviceId")
 
-        val request = Request.Builder()
-            .url("ws://192.168.43.150:8080/ws/estimates?userId=$userId&deviceId=$deviceId")
-            .build()
+        val url = "ws://192.168.0.109:8080/ws/estimates?userId=$userId&deviceId=$deviceId"
 
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.e(tag, "🎉🎉🎉 WEBSOCKET ON OPEN! User: $userId 🎉🎉🎉")
-                isConnected = true
+        webSocket = okHttpClient.newWebSocket(
+            Request.Builder().url(url).build(),
+            createListener(userId)
+        )
+    }
+
+    private fun createListener(userId: String) = object : WebSocketListener() {
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            Log.d(TAG, "WebSocket opened for user=$userId")
+            isConnected = true
+            reconnectAttempts = 0
+            isReconnecting = false
+            reconnectGuard.set(false)
+            reconnectJob?.cancel()
+        }
+
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            if (text == "ping") {
+                webSocket.send("pong")
+                return
+            }
+            handleSyncMessage(text)
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            Log.w(TAG, "WebSocket failure: ${t.message}")
+            isConnected = false
+            currentUserId?.let { startReconnect(it) }
+        }
+
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            Log.d(TAG, "WebSocket closed: $reason (code=$code)")
+            isConnected = false
+
+            if (code == 1000) {
                 reconnectAttempts = 0
                 isReconnecting = false
-                reconnectJob?.cancel()
+                reconnectGuard.set(false)
+            } else {
+                currentUserId?.let { startReconnect(it) }
             }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.d(tag, "📩 Received message: $text")
-
-                if (text == "ping") {
-                    webSocket.send("pong")
-                    Log.d(tag, "🏓 Received ping from server, sent pong")
-                    return
-                }
-
-                handleSyncMessage(text)
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(tag, "💀💀💀 WEBSOCKET ON FAILURE: ${t.message} 💀💀💀")
-                isConnected = false
-
-                if (currentUserId != null) {
-                    Log.d(tag, "🔌 Failure detected, starting reconnect for user: $currentUserId")
-                    startReconnect(currentUserId!!)
-                }
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.e(tag, "🔴🔴🔴 WebSocket closed: $reason (code: $code) 🔴🔴🔴")
-                isConnected = false
-
-                when (code) {
-                    1000 -> {
-                        Log.d(tag, "✅ Normal closure (code 1000), user initiated logout, not reconnecting")
-                        reconnectAttempts = 0
-                        isReconnecting = false
-                    }
-                    else -> {
-                        Log.d(tag, "🔄 Non-normal closure (code $code), starting reconnect for user: $currentUserId")
-                        if (currentUserId != null) {
-                            startReconnect(currentUserId!!)
-                        }
-                    }
-                }
-            }
-        })
+        }
     }
 
     private fun startReconnect(userId: String) {
-        if (isReconnecting) {
-            Log.d(tag, "Reconnect already in progress, skipping")
+        if (!reconnectGuard.compareAndSet(false, true)) {
+            Log.d(TAG, "Reconnect already scheduled")
             return
         }
 
@@ -168,295 +150,167 @@ class WebSocketService @Inject constructor(
         reconnectJob?.cancel()
 
         reconnectJob = scope.launch {
-            while (!isConnected && reconnectAttempts < maxReconnectAttempts) {
-                reconnectAttempts++
+            try {
+                while (isActive && !isConnected && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts++
 
-                val delayMs = minOf(2000L * (1 shl minOf(reconnectAttempts - 1, 5)), 60000L)
-                Log.d(tag, "🔄 Reconnect attempt $reconnectAttempts/$maxReconnectAttempts in ${delayMs}ms")
+                    val delayMs = computeBackoffDelay(reconnectAttempts)
+                    Log.d(TAG, "Reconnect attempt $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS in ${delayMs}ms")
+                    delay(delayMs)
 
-                delay(delayMs)
+                    if (isConnected) break
+                    if (!networkUtils.isOnline(context)) {
+                        Log.d(TAG, "No network, waiting...")
+                        continue
+                    }
 
-                if (isConnected) {
-                    Log.d(tag, "✅ Already connected, cancelling reconnect")
-                    break
-                }
-
-                if (hasInternetConnection()) {
-                    Log.d(tag, "🔌 Attempting reconnect...")
+                    Log.d(TAG, "Attempting reconnect")
                     disconnect()
                     connect(userId)
-                } else {
-                    Log.d(tag, "📡 No internet connection, waiting...")
                 }
-            }
 
-            if (reconnectAttempts >= maxReconnectAttempts && !isConnected) {
-                Log.e(tag, "❌ Max reconnect attempts reached, continuing with longer intervals")
-                reconnectAttempts = maxReconnectAttempts / 2
+                if (!isConnected) {
+                    Log.w(TAG, "Max reconnect attempts reached, resetting counter")
+                    reconnectAttempts = MAX_RECONNECT_ATTEMPTS / 2
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } finally {
+                isReconnecting = false
+                reconnectGuard.set(false)
             }
-
-            isReconnecting = false
         }
     }
 
-    private fun hasInternetConnection(): Boolean {
-        return try {
-            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val network = connectivityManager.activeNetwork ?: return false
-                val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            } else {
-                @Suppress("DEPRECATION")
-                val activeNetworkInfo = connectivityManager.activeNetworkInfo
-                activeNetworkInfo != null && activeNetworkInfo.isConnected
-            }
-        } catch (e: Exception) {
-            Log.e(tag, "Error checking internet connection: ${e.message}")
-            false
-        }
+    private fun computeBackoffDelay(attempt: Int): Long {
+        val shift = minOf(attempt - 1, 5)
+        return minOf(RECONNECT_BASE_DELAY_MS * (1L shl shift), MAX_RECONNECT_DELAY_MS)
     }
 
     private fun handleSyncMessage(message: String) {
-        try {
-            val syncMessage = gson.fromJson(message, SyncMessage::class.java)
-            Log.d(tag, "Processing message type: ${syncMessage.type}, entityType: ${syncMessage.entityType}")
-
-            when (syncMessage.type) {
-                "FORCE_LOGOUT" -> {
-                    Log.w(tag, "⚠️ Received FORCE_LOGOUT from server")
-                    handleForceLogout()
-                }
-                "CREATE", "UPDATE", "SHARE", "SHARE_ACCEPTED", "SHARE_DECLINED" -> {
-                    handleDataMessage(syncMessage)
-                }
-                "DELETE" -> {
-                    handleDeleteMessage(syncMessage)
-                }
-                else -> {
-                    Log.w(tag, "Unknown message type: ${syncMessage.type}")
-                }
+        val syncMessage = runCatching { gson.fromJson(message, SyncMessage::class.java) }
+            .getOrElse {
+                Log.e(TAG, "Failed to parse message: ${it.message}")
+                return
             }
-        } catch (e: Exception) {
-            Log.e(tag, "Error parsing message: ${e.message}", e)
+
+        Log.d(TAG, "Message type=${syncMessage.type} entity=${syncMessage.entityType}")
+
+        when (syncMessage.type) {
+            "FORCE_LOGOUT" -> handleForceLogout()
+            "CREATE", "UPDATE", "SHARE", "SHARE_ACCEPTED", "SHARE_DECLINED" ->
+                handleDataMessage(syncMessage)
+            "DELETE" -> handleDeleteMessage(syncMessage)
+            else -> Log.w(TAG, "Unknown message type: ${syncMessage.type}")
         }
     }
 
     private fun handleForceLogout() {
+        Log.w(TAG, "FORCE_LOGOUT received")
         scope.launch {
-            try {
-                Log.e(tag, "🚨🚨🚨 HANDLE FORCE LOGOUT STARTED 🚨🚨🚨")
-                val userId = userPreferences.getUserId()
-                Log.w(tag, "Processing FORCE_LOGOUT for user: $userId")
-
+            runCatching {
                 clearAllLocalData()
                 disconnect()
+            }.onFailure { Log.e(TAG, "ForceLogout cleanup failed: ${it.message}") }
 
-                Log.e(tag, "📢 About to invoke onForceLogout callback")
-                withContext(Dispatchers.Main) {
-                    Log.e(tag, "📢 Invoking onForceLogout on Main thread")
-                    onForceLogout?.invoke()
-                    Log.e(tag, "📢 onForceLogout callback completed")
-                }
-
-                Log.d(tag, "FORCE_LOGOUT processed successfully")
-            } catch (e: Exception) {
-                Log.e(tag, "Error processing FORCE_LOGOUT: ${e.message}", e)
-            }
+            onForceLogout?.invoke()
         }
     }
 
-    private suspend fun clearAllLocalData() {
-        Log.d(tag, "🗑️ Clearing all local data (FORCE_LOGOUT)")
-        projectDao.deleteAll()
-        objectDao.deleteAll()
-        contactDao.deleteAll()
-        contactMethodDao.deleteAll()
-        materialDao.deleteAll()
-        workItemDao.deleteAll()
-        Log.d(tag, "✅ All local data cleared")
-    }
-
-
-
     private fun handleDataMessage(syncMessage: SyncMessage) {
-        val data = syncMessage.data
-        if (data == null) {
-            Log.w(tag, "Message data is null")
+        val data = syncMessage.data ?: run {
+            Log.w(TAG, "Message data is null")
+            return
+        }
+        if (!data.isJsonObject) {
+            Log.w(TAG, "Message data is not a JSON object: ${data.javaClass.simpleName}")
             return
         }
 
-        val dataJson = gson.toJson(data)
+        val json = data.asJsonObject.toString()
 
-        when (syncMessage.entityType) {
-            "PROJECT" -> {
-                try {
-                    val project = gson.fromJson(dataJson, Project::class.java)
-                    scope.launch {
-                        val existing = projectDao.getProjectById(project.id)
-                        if (existing == null) {
-                            projectDao.insertProject(project)
-                            Log.d(tag, "Inserted project: ${project.name} (${project.id})")
-                        } else {
-                            projectDao.updateProject(project)
-                            Log.d(tag, "Updated project: ${project.name} (${project.id})")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(tag, "Error processing PROJECT message: ${e.message}")
+        scope.launch {
+            runCatching {
+                when (syncMessage.entityType) {
+                    "PROJECT" -> upsertProject(gson.fromJson(json, Project::class.java))
+                    "OBJECT" -> upsertObject(gson.fromJson(json, ObjectModel::class.java))
+                    "CONTACT" -> upsertContact(gson.fromJson(json, Contact::class.java))
+                    "CONTACT_METHOD" -> upsertContactMethod(gson.fromJson(json, ContactMethod::class.java))
+                    "MATERIAL" -> upsertMaterial(gson.fromJson(json, Material::class.java))
+                    "WORK_ITEM" -> upsertWorkItem(gson.fromJson(json, WorkItem::class.java))
+                    else -> Log.w(TAG, "Unknown entity: ${syncMessage.entityType}")
                 }
-            }
-
-            "OBJECT" -> {
-                try {
-                    val obj = gson.fromJson(dataJson, ObjectModel::class.java)
-                    scope.launch {
-                        val existing = objectDao.getObjectById(obj.id)
-                        if (existing == null) {
-                            objectDao.insertObject(obj)
-                            Log.d(tag, "Inserted object: ${obj.name} (${obj.id})")
-                        } else {
-                            objectDao.updateObject(obj)
-                            Log.d(tag, "Updated object: ${obj.name} (${obj.id})")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(tag, "Error processing OBJECT message: ${e.message}")
-                }
-            }
-
-            "CONTACT" -> {
-                try {
-                    val contact = gson.fromJson(dataJson, Contact::class.java)
-                    scope.launch {
-                        val existing = contactDao.getContactById(contact.id)
-                        if (existing == null) {
-                            contactDao.insertContact(contact)
-                            Log.d(tag, "Inserted contact: ${contact.name} (${contact.id})")
-                        } else {
-                            contactDao.updateContact(contact)
-                            Log.d(tag, "Updated contact: ${contact.name} (${contact.id})")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(tag, "Error processing CONTACT message: ${e.message}")
-                }
-            }
-
-            "CONTACT_METHOD" -> {
-                try {
-                    val method = gson.fromJson(dataJson, ContactMethod::class.java)
-                    scope.launch {
-                        val existing = contactMethodDao.getContactMethodById(method.id)
-                        if (existing == null) {
-                            contactMethodDao.insertContactMethod(method)
-                            Log.d(tag, "Inserted contact method: ${method.methodType} (${method.id})")
-                        } else {
-                            contactMethodDao.updateContactMethod(method)
-                            Log.d(tag, "Updated contact method: ${method.methodType} (${method.id})")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(tag, "Error processing CONTACT_METHOD message: ${e.message}")
-                }
-            }
-
-            "MATERIAL" -> {
-                try {
-                    val material = gson.fromJson(dataJson, Material::class.java)
-                    scope.launch {
-                        val existing = materialDao.getMaterialById(material.id)
-                        if (existing == null) {
-                            materialDao.insertMaterial(material)
-                            Log.d(tag, "Inserted material: ${material.name} (${material.id})")
-                        } else {
-                            materialDao.updateMaterial(material)
-                            Log.d(tag, "Updated material: ${material.name} (${material.id})")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(tag, "Error processing MATERIAL message: ${e.message}")
-                }
-            }
-
-            "WORK_ITEM" -> {
-                try {
-                    val workItem = gson.fromJson(dataJson, WorkItem::class.java)
-                    scope.launch {
-                        val existing = workItemDao.getWorkItemById(workItem.id)
-                        if (existing == null) {
-                            workItemDao.insertWorkItem(workItem)
-                            Log.d(tag, "Inserted work item: ${workItem.name} (${workItem.id})")
-                        } else {
-                            workItemDao.updateWorkItem(workItem)
-                            Log.d(tag, "Updated work item: ${workItem.name} (${workItem.id})")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(tag, "Error processing WORK_ITEM message: ${e.message}")
-                }
-            }
-
-            else -> {
-                Log.w(tag, "Unknown entity type: ${syncMessage.entityType}")
-            }
+            }.onFailure { Log.e(TAG, "handleDataMessage failed: ${it.message}") }
         }
     }
 
     private fun handleDeleteMessage(syncMessage: SyncMessage) {
         val entityId = syncMessage.entityId
         if (entityId.isNullOrEmpty()) {
-            Log.w(tag, "Delete message has no entityId")
+            Log.w(TAG, "Delete message without entityId")
             return
         }
 
-        when (syncMessage.entityType) {
-            "PROJECT" -> {
-                scope.launch {
-                    projectDao.deleteProjectById(entityId)
-                    Log.d(tag, "Deleted project: $entityId")
+        scope.launch {
+            runCatching {
+                when (syncMessage.entityType) {
+                    "PROJECT" -> projectDao.deleteProjectById(entityId)
+                    "MATERIAL" -> materialDao.deleteMaterialById(entityId)
+                    "WORK_ITEM" -> workItemDao.deleteWorkItemById(entityId)
+                    "CONTACT" -> contactDao.deleteContactById(entityId)
+                    "CONTACT_METHOD" -> contactMethodDao.deleteContactMethodById(entityId)
+                    "OBJECT" -> objectDao.deleteObjectById(entityId)
+                    else -> Log.w(TAG, "Unknown entity for delete: ${syncMessage.entityType}")
                 }
-            }
-            "MATERIAL" -> {
-                scope.launch {
-                    materialDao.deleteMaterialById(entityId)
-                    Log.d(tag, "Deleted material: $entityId")
-                }
-            }
-            "WORK_ITEM" -> {
-                scope.launch {
-                    workItemDao.deleteWorkItemById(entityId)
-                    Log.d(tag, "Deleted work item: $entityId")
-                }
-            }
-            "CONTACT" -> {
-                scope.launch {
-                    contactDao.deleteContactById(entityId)
-                    Log.d(tag, "Deleted contact: $entityId")
-                }
-            }
-            "CONTACT_METHOD" -> {
-                scope.launch {
-                    contactMethodDao.deleteContactMethodById(entityId)
-                    Log.d(tag, "Deleted contact method: $entityId")
-                }
-            }
-            "OBJECT" -> {
-                scope.launch {
-                    objectDao.deleteObjectById(entityId)
-                    Log.d(tag, "Deleted object: $entityId")
-                }
-            }
-            else -> {
-                Log.w(tag, "Unknown entity type for delete: ${syncMessage.entityType}")
-            }
+            }.onFailure { Log.e(TAG, "handleDeleteMessage failed: ${it.message}") }
         }
     }
 
+    private suspend fun upsertProject(project: Project) {
+        if (projectDao.getProjectById(project.id) == null) projectDao.insertProject(project)
+        else projectDao.updateProject(project)
+    }
+
+    private suspend fun upsertObject(obj: ObjectModel) {
+        if (objectDao.getObjectById(obj.id) == null) objectDao.insertObject(obj)
+        else objectDao.updateObject(obj)
+    }
+
+    private suspend fun upsertContact(contact: Contact) {
+        if (contactDao.getContactById(contact.id) == null) contactDao.insertContact(contact)
+        else contactDao.updateContact(contact)
+    }
+
+    private suspend fun upsertContactMethod(method: ContactMethod) {
+        if (contactMethodDao.getContactMethodById(method.id) == null) contactMethodDao.insertContactMethod(method)
+        else contactMethodDao.updateContactMethod(method)
+    }
+
+    private suspend fun upsertMaterial(material: Material) {
+        if (materialDao.getMaterialById(material.id) == null) materialDao.insertMaterial(material)
+        else materialDao.updateMaterial(material)
+    }
+
+    private suspend fun upsertWorkItem(workItem: WorkItem) {
+        if (workItemDao.getWorkItemById(workItem.id) == null) workItemDao.insertWorkItem(workItem)
+        else workItemDao.updateWorkItem(workItem)
+    }
+
+    private suspend fun clearAllLocalData() {
+        Log.d(TAG, "Clearing local data (FORCE_LOGOUT)")
+        projectDao.deleteAll()
+        objectDao.deleteAll()
+        contactDao.deleteAll()
+        contactMethodDao.deleteAll()
+        materialDao.deleteAll()
+        workItemDao.deleteAll()
+    }
+
     fun disconnect() {
-        Log.d(tag, "Disconnecting WebSocket")
+        Log.d(TAG, "Disconnecting WebSocket")
         reconnectJob?.cancel()
+        reconnectJob = null
+        reconnectGuard.set(false)
         isReconnecting = false
         webSocket?.close(1000, "Normal closure")
         webSocket = null

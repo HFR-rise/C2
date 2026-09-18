@@ -18,102 +18,128 @@ class ObjectRepository @Inject constructor(
     private val userPreferences: UserPreferences
 ) {
 
-    // ===== GET МЕТОДЫ (Flow) =====
+    private companion object {
+        const val TAG = "ObjectRepository"
+        const val ROOT_OBJECT_NAME = "Без объекта"
+    }
+
     fun getRootObjects(): Flow<List<ObjectModel>> = objectDao.getRootObjects()
-    fun getChildObjects(parentId: String): Flow<List<ObjectModel>> = objectDao.getChildObjects(parentId)
-    suspend fun getObjectById(id: String): ObjectModel? = objectDao.getObjectById(id)
-    fun getProjectsForObject(objectId: String): Flow<List<Project>> = projectDao.getProjectsByObjectId(objectId)
+
+    fun getChildObjects(parentId: String): Flow<List<ObjectModel>> =
+        objectDao.getChildObjects(parentId)
+
     fun getAllObjects(): Flow<List<ObjectModel>> = objectDao.getAllObjects()
 
-    // ===== GET МЕТОДЫ (однократная загрузка) =====
-    suspend fun getRootObjectsOnce(): List<ObjectModel> = getRootObjects().first()
-    suspend fun getChildObjectsOnce(parentId: String): List<ObjectModel> = getChildObjects(parentId).first()
-    suspend fun getAllObjectsOnce(): List<ObjectModel> = getAllObjects().first()
+    fun getProjectsForObject(objectId: String): Flow<List<Project>> =
+        projectDao.getProjectsByObjectId(objectId)
 
-    // ===== ВСТАВКА И ОБНОВЛЕНИЕ =====
-    suspend fun insertObject(objectModel: ObjectModel): Long = objectDao.insertObject(objectModel)
-    suspend fun updateObject(objectModel: ObjectModel) = objectDao.updateObject(objectModel)
+    suspend fun getObjectById(id: String): ObjectModel? = objectDao.getObjectById(id)
 
-    // ===== КАСКАДНОЕ УДАЛЕНИЕ ОБЪЕКТА (УДАЛЯЕТ ВСЕ СВЯЗАННЫЕ СМЕТЫ) =====
+    suspend fun getRootObjectsOnce(): List<ObjectModel> = objectDao.getRootObjects().first()
+
+    suspend fun getChildObjectsOnce(parentId: String): List<ObjectModel> =
+        objectDao.getChildObjects(parentId).first()
+
+    suspend fun getAllObjectsOnce(): List<ObjectModel> =
+        objectDao.getAllObjectsOnce()
+
+    suspend fun insertObject(objectModel: ObjectModel): Long =
+        objectDao.insertObject(objectModel)
+
+    suspend fun updateObject(objectModel: ObjectModel) =
+        objectDao.updateObject(objectModel)
+
+    suspend fun upsertObject(objectModel: ObjectModel) =
+        objectDao.upsertObject(objectModel)
+
     suspend fun deleteObjectWithCascade(objectModel: ObjectModel): DeletionResult {
-        Log.d("ObjectRepository", "=== STARTING CASCADE DELETE (WITH PROJECTS DELETION) ===")
-        Log.d("ObjectRepository", "Deleting object: ${objectModel.name} (${objectModel.id})")
-
-        var totalProjectsDeleted = 0
-        var totalMaterialsDeleted = 0
-        var totalWorkItemsDeleted = 0
-
-        // 1. Рекурсивно получаем ВСЕ дочерние объекты
         val allChildObjects = getAllChildObjectsRecursive(objectModel.id)
-        Log.d("ObjectRepository", "Found ${allChildObjects.size} child objects to delete")
-
-        // 2. Собираем все ID объектов для удаления (включая родительский)
         val allObjectIds = listOf(objectModel.id) + allChildObjects.map { it.id }
 
-        // 3. ДЛЯ КАЖДОГО ОБЪЕКТА УДАЛЯЕМ ВСЕ СВЯЗАННЫЕ СМЕТЫ (вместе с материалами и работами)
+        var projectsDeleted = 0
         for (objId in allObjectIds) {
-            val result = deleteAllProjectsForObject(objId)
-            totalProjectsDeleted += result.projectsDeleted
-            totalMaterialsDeleted += result.materialsDeleted
-            totalWorkItemsDeleted += result.workItemsDeleted
-            Log.d("ObjectRepository", "Deleted ${result.projectsDeleted} projects from object $objId")
+            val projects = projectDao.getProjectsByObjectIdOnce(objId)
+            projects.forEach {
+                projectDao.deleteProject(it)
+                projectsDeleted++
+            }
         }
 
-        // 4. Удаляем все объекты
-        for (objId in allObjectIds) {
-            objectDao.deleteObjectById(objId)
-            Log.d("ObjectRepository", "Deleted object: $objId")
-        }
+        objectDao.deleteObject(objectModel)
 
-        val result = DeletionResult(
+        Log.d(TAG, "Cascade delete: ${allObjectIds.size} objects, $projectsDeleted projects")
+
+        return DeletionResult(
             objectsDeleted = allObjectIds.size,
-            projectsDeleted = totalProjectsDeleted,
-            materialsDeleted = totalMaterialsDeleted,
-            workItemsDeleted = totalWorkItemsDeleted
+            projectsDeleted = projectsDeleted,
+            materialsDeleted = 0,
+            workItemsDeleted = 0
         )
-
-        Log.d("ObjectRepository", "=== CASCADE DELETE COMPLETED ===")
-        Log.d("ObjectRepository", "Deleted ${result.objectsDeleted} objects, ${result.projectsDeleted} projects, " +
-                "${result.materialsDeleted} materials, ${result.workItemsDeleted} work items")
-
-        return result
     }
 
-    // Удаляет ВСЕ проекты, привязанные к объекту (вместе с материалами и работами)
-    private suspend fun deleteAllProjectsForObject(objectId: String): ProjectDeletionResult {
-        val projects = projectDao.getProjectsByObjectId(objectId).first()
+    suspend fun deleteObjectSimple(objectModel: ObjectModel) =
+        objectDao.deleteObject(objectModel)
 
-        var materialsDeleted = 0
-        var workItemsDeleted = 0
+    suspend fun deleteProjectWithAllData(project: Project): ProjectDeletionResult {
+        projectDao.deleteProject(project)
+        Log.d(TAG, "Project deleted: ${project.name}")
+        return ProjectDeletionResult(
+            projectsDeleted = 1,
+            materialsDeleted = 0,
+            workItemsDeleted = 0
+        )
+    }
 
-        for (project in projects) {
-            // Удаляем все материалы проекта
-            val materials = projectDao.getMaterialsForProject(project.id).first()
-            for (material in materials) {
-                projectDao.deleteMaterialById(material.id)
-                materialsDeleted++
-            }
+    suspend fun cleanupOrphanedProjects(): Int {
+        val rootObjectId = getOrCreateRootObjectId()
+        val allObjects = getAllObjectsOnce()
+        val validObjectIds = allObjects.map { it.id }.toSet()
 
-            // Удаляем все работы проекта
-            val workItems = projectDao.getWorkItemsForProject(project.id).first()
-            for (workItem in workItems) {
-                projectDao.deleteWorkItemById(workItem.id)
-                workItemsDeleted++
-            }
-
-            // Удаляем сам проект
-            projectDao.deleteProject(project)
-            Log.d("ObjectRepository", "Deleted project: ${project.name} (${project.id})")
+        val allProjects = projectDao.getAllProjectsOnce()
+        val orphanedProjects = allProjects.filter { project ->
+            project.objectId != null &&
+                    project.objectId !in validObjectIds &&
+                    project.objectId != rootObjectId
         }
 
-        return ProjectDeletionResult(
-            projectsDeleted = projects.size,
-            materialsDeleted = materialsDeleted,
-            workItemsDeleted = workItemsDeleted
-        )
+        orphanedProjects.forEach { project ->
+            projectDao.updateProject(project.copy(objectId = rootObjectId))
+        }
+
+        if (orphanedProjects.isNotEmpty()) {
+            Log.d(TAG, "Fixed ${orphanedProjects.size} orphaned projects")
+        }
+
+        return orphanedProjects.size
     }
 
-    // Рекурсивно получаем все дочерние объекты
+    suspend fun getTotalObjectsCount(): Int =
+        objectDao.getAllObjectsOnce().size
+
+    suspend fun getTotalProjectsCount(): Int =
+        projectDao.getAllProjectsOnce().size
+
+    suspend fun getOrCreateRootObjectId(): String {
+        val existingRoot = getRootObjectsOnce().find { it.name == ROOT_OBJECT_NAME }
+        if (existingRoot != null) return existingRoot.id
+
+        val newRoot = ObjectModel(
+            name = ROOT_OBJECT_NAME,
+            description = "Корневые сметы (автоматически создан)",
+            userId = userPreferences.getUserId().orEmpty()
+        )
+        objectDao.insertObject(newRoot)
+        Log.d(TAG, "Created root object: ${newRoot.id}")
+        return newRoot.id
+    }
+
+    suspend fun getRootObjectId(): String? =
+        getRootObjectsOnce().find { it.name == ROOT_OBJECT_NAME }?.id
+
+    suspend fun deleteAllObjects() {
+        objectDao.deleteAll()
+    }
+
     private suspend fun getAllChildObjectsRecursive(parentId: String): List<ObjectModel> {
         val allChildren = mutableListOf<ObjectModel>()
         val directChildren = objectDao.getChildObjects(parentId).first()
@@ -122,147 +148,24 @@ class ObjectRepository @Inject constructor(
             allChildren.add(child)
             allChildren.addAll(getAllChildObjectsRecursive(child.id))
         }
-
         return allChildren
-    }
-
-    // ===== ПРОСТОЕ УДАЛЕНИЕ (без каскада, только объект) =====
-    suspend fun deleteObjectSimple(objectModel: ObjectModel) = objectDao.deleteObject(objectModel)
-
-    // ===== УДАЛЕНИЕ ОДНОГО ПРОЕКТА С ЕГО ДАННЫМИ =====
-    suspend fun deleteProjectWithAllData(project: Project): ProjectDeletionResult {
-        Log.d("ObjectRepository", "Deleting project with all data: ${project.name}")
-
-        var materialsDeleted = 0
-        var workItemsDeleted = 0
-
-        // Удаляем все материалы проекта
-        val materials = projectDao.getMaterialsForProject(project.id).first()
-        for (material in materials) {
-            projectDao.deleteMaterialById(material.id)
-            materialsDeleted++
-        }
-
-        // Удаляем все работы проекта
-        val workItems = projectDao.getWorkItemsForProject(project.id).first()
-        for (workItem in workItems) {
-            projectDao.deleteWorkItemById(workItem.id)
-            workItemsDeleted++
-        }
-
-        // Удаляем сам проект
-        projectDao.deleteProject(project)
-
-        Log.d("ObjectRepository", "Deleted project with $materialsDeleted materials and $workItemsDeleted work items")
-
-        return ProjectDeletionResult(
-            projectsDeleted = 1,
-            materialsDeleted = materialsDeleted,
-            workItemsDeleted = workItemsDeleted
-        )
-    }
-
-    // ===== ОЧИСТКА "БИТЫХ" ССЫЛОК (перемещает в корневой объект) =====
-    suspend fun cleanupOrphanedProjects(): Int {
-        Log.d("ObjectRepository", "Starting cleanup of orphaned projects")
-
-        val rootObjectId = getOrCreateRootObjectId()
-        val allObjects = getAllObjectsOnce()
-        val validObjectIds = allObjects.map { it.id }.toSet()
-
-        // Находим проекты с битыми ссылками
-        val allProjects = projectDao.getAllProjectsOnce()
-        val orphanedProjects = allProjects.filter { project ->
-            project.objectId != null &&
-                    project.objectId !in validObjectIds &&
-                    project.objectId != rootObjectId
-        }
-
-        Log.d("ObjectRepository", "Found ${orphanedProjects.size} orphaned projects")
-
-        // Перемещаем их в корневой объект (НЕ УДАЛЯЕМ!)
-        for (project in orphanedProjects) {
-            val fixedProject = project.copy(objectId = rootObjectId)
-            projectDao.updateProject(fixedProject)
-            Log.d("ObjectRepository", "Fixed orphaned project: ${project.name} -> moved to root")
-        }
-
-        return orphanedProjects.size
-    }
-
-    // Получаем или создаем корневой объект "Без объекта"
-    private suspend fun getOrCreateRootObjectId(): String {
-        val rootObjects = getRootObjectsOnce()
-        val existingRoot = rootObjects.find { it.name == "Без объекта" }
-
-        if (existingRoot != null) {
-            return existingRoot.id
-        }
-
-        // Создаем новый корневой объект
-        val newRoot = ObjectModel(
-            name = "Без объекта",
-            description = "Корневые сметы (автоматически создан)",
-            userId = userPreferences.getUserId() ?: ""
-        )
-        objectDao.insertObject(newRoot)
-        Log.d("ObjectRepository", "Created new root object: ${newRoot.id}")
-        return newRoot.id
-    }
-
-    // ===== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ =====
-    suspend fun getTotalObjectsCount(): Int {
-        return objectDao.getAllObjectsSync().size
-    }
-
-    suspend fun getTotalProjectsCount(): Int {
-        return projectDao.getAllProjectsSync().size
-    }
-
-    suspend fun insertOrUpdateObject(objectModel: ObjectModel) {
-        val existing = objectDao.getObjectById(objectModel.id)
-        if (existing == null) {
-            objectDao.insertObject(objectModel)
-            Log.d("ObjectRepository", "Inserted new object: ${objectModel.name}")
-        } else {
-            objectDao.updateObject(objectModel)
-            Log.d("ObjectRepository", "Updated existing object: ${objectModel.name}")
-        }
-    }
-
-    suspend fun deleteAllObjects() {
-        objectDao.deleteAll()
-    }
-
-    suspend fun getRootObjectId(): String? {
-        val rootObjects = getRootObjectsOnce()
-        return rootObjects.find { it.name == "Без объекта" }?.id
-    }
-
-    suspend fun deleteChildObjects(parentId: String) {
-        objectDao.deleteChildObjects(parentId)
-    }
-
-    suspend fun deleteRootObjects() {
-        objectDao.deleteRootObjects()
     }
 }
 
-// Результат удаления объекта
 data class DeletionResult(
     val objectsDeleted: Int,
     val projectsDeleted: Int,
     val materialsDeleted: Int,
     val workItemsDeleted: Int
 ) {
-    fun getTotalItemsDeleted(): Int = objectsDeleted + projectsDeleted + materialsDeleted + workItemsDeleted
+    fun getTotalItemsDeleted(): Int =
+        objectsDeleted + projectsDeleted + materialsDeleted + workItemsDeleted
 
-    override fun toString(): String {
-        return "Удалено: объектов: $objectsDeleted, смет: $projectsDeleted, материалов: $materialsDeleted, работ: $workItemsDeleted"
-    }
+    override fun toString(): String =
+        "Удалено: объектов: $objectsDeleted, смет: $projectsDeleted, " +
+                "материалов: $materialsDeleted, работ: $workItemsDeleted"
 }
 
-// Результат удаления проекта
 data class ProjectDeletionResult(
     val projectsDeleted: Int,
     val materialsDeleted: Int,

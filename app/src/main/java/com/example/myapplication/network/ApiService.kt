@@ -1,15 +1,29 @@
 package com.example.myapplication.network
 
-import com.example.myapplication.data.models.*
+import com.example.myapplication.data.models.Contact
+import com.example.myapplication.data.models.ContactMethod
+import com.example.myapplication.data.models.Material
+import com.example.myapplication.data.models.ObjectModel
+import com.example.myapplication.data.models.Project
+import com.example.myapplication.data.models.SendCodeRequest
+import com.example.myapplication.data.models.UserResponse
+import com.example.myapplication.data.models.VerifyCodeRequest
+import com.example.myapplication.data.models.WorkItem
+import com.example.myapplication.network.models.SessionCheckResponse
 import retrofit2.Response
-import retrofit2.http.*
+import retrofit2.http.Body
+import retrofit2.http.DELETE
+import retrofit2.http.GET
+import retrofit2.http.PATCH
+import retrofit2.http.POST
+import retrofit2.http.PUT
+import retrofit2.http.Path
+import retrofit2.http.Query
 
 interface ApiService {
 
-    // ==================== AUTH ====================
-
     @POST("api/auth/logout")
-    suspend fun logout(@Header("X-User-Id") userId: String): Response<Unit>
+    suspend fun logout(): Response<Unit>
 
     @POST("api/auth/send-code")
     suspend fun sendCode(@Body request: SendCodeRequest): Response<Unit>
@@ -21,15 +35,12 @@ interface ApiService {
     suspend fun getUser(@Path("userId") userId: String): Response<UserResponse>
 
     @GET("api/auth/session/check")
-    suspend fun checkSession(@Header("X-User-Id") userId: String): Response<SessionCheckResponse>
+    suspend fun checkSession(): Response<SessionCheckResponse>
 
     @GET("api/auth/session/check-with-device")
     suspend fun checkSessionWithDevice(
-        @Header("X-User-Id") userId: String,
         @Query("deviceId") deviceId: String
     ): Response<SessionCheckResponse>
-
-    // ==================== PROJECTS ====================
 
     @GET("api/projects")
     suspend fun getAllProjects(): Response<List<Project>>
@@ -38,26 +49,19 @@ interface ApiService {
     suspend fun getProjectsForUser(@Path("userId") userId: String): Response<List<Project>>
 
     @GET("api/projects/{id}")
-    suspend fun getProject(
-        @Path("id") id: String,
-        @Header("X-User-Id") userId: String
-    ): Response<Project>
-
-    @GET("api/projects/{id}")
     suspend fun getProject(@Path("id") id: String): Response<Project>
 
     @POST("api/projects")
-    suspend fun createProject(@Body project: Project, @Header("X-User-Id") userId: String): Response<Project>
+    suspend fun createProject(@Body project: Project): Response<Project>
 
     @PUT("api/projects/{id}")
     suspend fun updateProject(
         @Path("id") id: String,
-        @Body project: Project,
-        @Header("X-User-Id") userId: String
+        @Body project: Project
     ): Response<Project>
 
     @DELETE("api/projects/{id}")
-    suspend fun deleteProject(@Path("id") id: String, @Header("X-User-Id") userId: String): Response<Unit>
+    suspend fun deleteProject(@Path("id") id: String): Response<Unit>
 
     @GET("api/projects/{projectId}/materials")
     suspend fun getMaterials(@Path("projectId") projectId: String): Response<List<Material>>
@@ -68,153 +72,96 @@ interface ApiService {
     @POST("api/projects/{projectId}/share")
     suspend fun shareProject(
         @Path("projectId") projectId: String,
-        @Body request: Map<String, String>,
-        @Header("X-User-Id") userId: String
+        @Body request: Map<String, String>
     ): Response<Unit>
 
     @GET("api/projects/pending/{userId}")
     suspend fun getPendingProjects(@Path("userId") userId: String): Response<List<Project>>
 
     @POST("api/projects/{projectId}/accept")
-    suspend fun acceptShare(
-        @Path("projectId") projectId: String,
-        @Header("X-User-Id") userId: String
-    ): Response<Unit>
+    suspend fun acceptShare(@Path("projectId") projectId: String): Response<Unit>
 
     @POST("api/projects/{projectId}/decline")
-    suspend fun declineShare(
-        @Path("projectId") projectId: String,
-        @Header("X-User-Id") userId: String
-    ): Response<Unit>
-
-    // ==================== MATERIALS ====================
+    suspend fun declineShare(@Path("projectId") projectId: String): Response<Unit>
 
     @POST("api/materials")
-    suspend fun addMaterial(@Body material: Material, @Header("X-User-Id") userId: String): Response<Material>
+    suspend fun addMaterial(@Body material: Material): Response<Material>
 
     @PUT("api/materials/{id}")
     suspend fun updateMaterial(
         @Path("id") id: String,
-        @Body material: Material,
-        @Header("X-User-Id") userId: String
+        @Body material: Material
     ): Response<Material>
 
     @DELETE("api/materials/{id}")
-    suspend fun deleteMaterial(@Path("id") id: String, @Header("X-User-Id") userId: String): Response<Unit>
-
-    // ==================== WORK ITEMS ====================
+    suspend fun deleteMaterial(@Path("id") id: String): Response<Unit>
 
     @POST("api/work-items")
-    suspend fun addWorkItem(@Body workItem: WorkItem, @Header("X-User-Id") userId: String): Response<WorkItem>
+    suspend fun addWorkItem(@Body workItem: WorkItem): Response<WorkItem>
 
     @PUT("api/work-items/{id}")
     suspend fun updateWorkItem(
         @Path("id") id: String,
-        @Body workItem: WorkItem,
-        @Header("X-User-Id") userId: String
+        @Body workItem: WorkItem
     ): Response<WorkItem>
 
     @DELETE("api/work-items/{id}")
-    suspend fun deleteWorkItem(@Path("id") id: String, @Header("X-User-Id") userId: String): Response<Unit>
+    suspend fun deleteWorkItem(@Path("id") id: String): Response<Unit>
 
     @PATCH("api/work-items/{id}/complete")
-    suspend fun markWorkItemCompleted(
-        @Path("id") id: String,
-        @Header("X-User-Id") userId: String
-    ): Response<WorkItem>
-
-    // ==================== CONTACTS ====================
+    suspend fun markWorkItemCompleted(@Path("id") id: String): Response<WorkItem>
 
     @GET("api/contacts")
-    suspend fun getAllContacts(@Header("X-User-Id") userId: String): Response<List<Contact>>
+    suspend fun getAllContacts(): Response<List<Contact>>
 
     @GET("api/contacts/{id}")
-    suspend fun getContact(
-        @Path("id") id: String,
-        @Header("X-User-Id") userId: String
-    ): Response<Contact>
+    suspend fun getContact(@Path("id") id: String): Response<Contact>
 
     @GET("api/contacts/{contactId}/methods")
     suspend fun getContactMethods(@Path("contactId") contactId: String): Response<List<ContactMethod>>
 
     @POST("api/contacts")
-    suspend fun createContact(@Body contact: Contact, @Header("X-User-Id") userId: String): Response<Contact>
+    suspend fun createContact(@Body contact: Contact): Response<Contact>
 
     @PUT("api/contacts/{id}")
     suspend fun updateContact(
         @Path("id") id: String,
-        @Body contact: Contact,
-        @Header("X-User-Id") userId: String
+        @Body contact: Contact
     ): Response<Contact>
 
     @DELETE("api/contacts/{id}")
-    suspend fun deleteContact(@Path("id") id: String, @Header("X-User-Id") userId: String): Response<Unit>
+    suspend fun deleteContact(@Path("id") id: String): Response<Unit>
 
     @POST("api/contacts/methods")
-    suspend fun addContactMethod(@Body method: ContactMethod, @Header("X-User-Id") userId: String): Response<ContactMethod>
+    suspend fun addContactMethod(@Body method: ContactMethod): Response<ContactMethod>
 
     @PUT("api/contacts/methods/{id}")
     suspend fun updateContactMethod(
         @Path("id") id: String,
-        @Body method: ContactMethod,
-        @Header("X-User-Id") userId: String
+        @Body method: ContactMethod
     ): Response<ContactMethod>
 
     @DELETE("api/contacts/methods/{id}")
-    suspend fun deleteContactMethod(
-        @Path("id") id: String,
-        @Header("X-User-Id") userId: String
-    ): Response<Unit>
-
-    // ==================== OBJECTS ====================
+    suspend fun deleteContactMethod(@Path("id") id: String): Response<Unit>
 
     @GET("api/objects/root")
     suspend fun getRootObjects(): Response<List<ObjectModel>>
 
-    @GET("api/objects/root")
-    suspend fun getRootObjects(@Header("X-User-Id") userId: String): Response<List<ObjectModel>>
-
     @GET("api/objects/{id}")
-    suspend fun getObject(
-        @Path("id") id: String,
-        @Header("X-User-Id") userId: String
-    ): Response<ObjectModel>
+    suspend fun getObject(@Path("id") id: String): Response<ObjectModel>
 
     @GET("api/objects/{parentId}/children")
     suspend fun getChildObjects(@Path("parentId") parentId: String): Response<List<ObjectModel>>
 
-    @GET("api/objects/{parentId}/children")
-    suspend fun getChildObjects(
-        @Path("parentId") parentId: String,
-        @Header("X-User-Id") userId: String
-    ): Response<List<ObjectModel>>
-
     @POST("api/objects")
-    suspend fun createObject(@Body obj: ObjectModel, @Header("X-User-Id") userId: String): Response<ObjectModel>
+    suspend fun createObject(@Body obj: ObjectModel): Response<ObjectModel>
 
     @PUT("api/objects/{id}")
     suspend fun updateObject(
         @Path("id") id: String,
-        @Body obj: ObjectModel,
-        @Header("X-User-Id") userId: String
+        @Body obj: ObjectModel
     ): Response<ObjectModel>
 
     @DELETE("api/objects/{id}")
-    suspend fun deleteObject(@Path("id") id: String, @Header("X-User-Id") userId: String): Response<Unit>
-
-    interface ApiService {
-        @POST("api/auth/verify")
-        @Headers("Content-Type: application/json")
-        suspend fun verifyCode(@Body request: VerifyCodeRequest): Response<UserResponse>
-        // Response уже содержит code и message
-    }
-
-
-
-    // ==================== MODELS ====================
-
-    data class SessionCheckResponse(
-        val isValid: Boolean,
-        val message: String? = null
-    )
+    suspend fun deleteObject(@Path("id") id: String): Response<Unit>
 }

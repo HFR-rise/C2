@@ -14,13 +14,10 @@ import com.example.myapplication.data.models.*
         WorkItem::class,
         Contact::class,
         ContactMethod::class,
-//        Transaction::class,
         ObjectModel::class,
         SyncOperationEntity::class
-//        ObjectProject::class
-
     ],
-    version = 23,
+    version = 24,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -31,10 +28,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun workItemDao(): WorkItemDao
     abstract fun contactDao(): ContactDao
     abstract fun contactMethodDao(): ContactMethodDao
-//    abstract fun transactionDao(): TransactionDao
     abstract fun objectDao(): ObjectDao
     abstract fun syncOperationDao(): SyncOperationDao
-//    abstract fun objectProjectDao(): ObjectProjectDao
 
     companion object {
         @Volatile

@@ -1,174 +1,150 @@
 package com.example.myapplication.services
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.os.Build
 import android.util.Log
+import com.example.myapplication.utils.NetworkUtils
 import com.example.myapplication.utils.UserPreferences
-import kotlinx.coroutines.*
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class NetworkMonitor @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val userPreferences: UserPreferences,
     private val webSocketService: WebSocketService,
-    private val syncManager: SyncManager
+    private val syncManager: SyncManager,
+    private val networkUtils: NetworkUtils
 ) {
-    private val TAG = "NetworkMonitor"
-    private var monitoringJob: Job? = null
+    private companion object {
+        const val TAG = "NetworkMonitor"
+        const val POLL_INTERVAL_MS = 3_000L
+        const val MAX_RECONNECT_ATTEMPTS = 3
+        const val RECONNECT_DELAY_BASE_MS = 1_000L
+    }
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var monitoringJob: Job? = null
 
-    @Volatile
-    private var wasOnline = false
+    @Volatile private var isMonitoring = false
+    @Volatile private var wasOnline = false
 
-    @Volatile
-    private var isMonitoring = false
-
-    @Volatile
-    private var reconnectInProgress = false
+    private val recoveryInProgress = AtomicBoolean(false)
 
     init {
+        wasOnline = networkUtils.isOnline(context)
         startMonitoring()
     }
 
     private fun startMonitoring() {
-        if (isMonitoring) return
+        if (monitoringJob?.isActive == true) return
 
-        monitoringJob?.cancel()
         isMonitoring = true
-        Log.d(TAG, "🟢 Network monitoring started")
+        Log.d(TAG, "Network monitoring started")
 
         monitoringJob = scope.launch {
             var consecutiveErrors = 0
 
             while (isMonitoring && isActive) {
                 try {
-                    val isOnline = hasInternetConnection()
+                    val isOnline = networkUtils.isOnline(context)
 
-                    if (!wasOnline && isOnline) {
-                        Log.d(TAG, "🌐 Network recovered!")
-                        handleNetworkRecovery()
-                        consecutiveErrors = 0
-                    } else if (wasOnline && !isOnline) {
-                        Log.d(TAG, "⚠️ Network lost!")
-                        handleNetworkLost()
+                    when {
+                        !wasOnline && isOnline -> {
+                            Log.d(TAG, "Network recovered")
+                            handleNetworkRecovery()
+                            consecutiveErrors = 0
+                        }
+                        wasOnline && !isOnline -> {
+                            Log.d(TAG, "Network lost")
+                        }
                     }
 
                     wasOnline = isOnline
-                    delay(3000L)
+
+                    delay(POLL_INTERVAL_MS)
 
                 } catch (e: CancellationException) {
-                    Log.d(TAG, "Monitoring loop cancelled")
-                    break
+                    throw e
                 } catch (e: Exception) {
                     consecutiveErrors++
-                    Log.e(TAG, "Error in monitoring loop (${consecutiveErrors}x): ${e.message}")
-
-                    val delayMs = minOf(consecutiveErrors * 2000L, 30000L)
-                    delay(delayMs)
+                    Log.e(TAG, "Monitor loop error (${consecutiveErrors}x): ${e.message}")
+                    delay(minOf(consecutiveErrors * 2_000L, 30_000L))
                 }
             }
-        }
-    }
-
-    private suspend fun handleNetworkRecovery() {
-        if (reconnectInProgress) {
-            Log.d(TAG, "Reconnect already in progress, skipping")
-            return
-        }
-
-        reconnectInProgress = true
-
-        try {
-            val userId = userPreferences.getUserId()
-            if (userId == null) {
-                Log.d(TAG, "User not logged in, skipping network recovery")
-                return
-            }
-
-            // ✅ МНОГОКРАТНЫЕ ПОПЫТКИ RECONNECT
-            var attempt = 0
-            val maxAttempts = 3
-
-            while (attempt < maxAttempts && !webSocketService.isConnected()) {
-                attempt++
-                Log.d(TAG, "🔌 Reconnect attempt $attempt/$maxAttempts...")
-
-                webSocketService.disconnect()
-                webSocketService.connect(userId)
-
-                delay(1000L * attempt)
-
-                if (webSocketService.isConnected()) {
-                    Log.d(TAG, "✅ WebSocket reconnected successfully on attempt $attempt")
-                    break
-                } else {
-                    Log.w(TAG, "⚠️ Reconnect attempt $attempt failed")
-                }
-            }
-
-            if (!webSocketService.isConnected()) {
-                Log.e(TAG, "❌ All reconnect attempts failed, will retry later")
-            }
-
-\            Log.d(TAG, "📡 Starting data sync...")
-            syncManager.handleOnlineRecovery()
-
-        } finally {
-            reconnectInProgress = false
-        }
-
-        Log.d(TAG, "✅ Network recovery completed")
-    }
-
-    private fun handleNetworkLost() {
-        Log.d(TAG, "🔴 Network lost")
-    }
-
-    fun hasInternetConnection(): Boolean {
-        return try {
-            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val network = connectivityManager.activeNetwork ?: return false
-                val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            } else {
-                @Suppress("DEPRECATION")
-                val activeNetworkInfo = connectivityManager.activeNetworkInfo
-                activeNetworkInfo != null && activeNetworkInfo.isConnected
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error checking internet connection: ${e.message}")
-            false
         }
     }
 
     fun stopMonitoring() {
-        Log.d(TAG, "Stopping network monitoring...")
+        if (!isMonitoring && monitoringJob == null) return
+        Log.d(TAG, "Stopping network monitoring")
         isMonitoring = false
         monitoringJob?.cancel()
         monitoringJob = null
         wasOnline = false
-        reconnectInProgress = false
-        Log.d(TAG, "🔴 Network monitoring stopped")
+        recoveryInProgress.set(false)
     }
 
-    fun resumeMonitoring() {
-        if (isMonitoring) return
-        Log.d(TAG, "Resuming network monitoring...")
-        wasOnline = false
-        startMonitoring()
-        Log.d(TAG, "🟢 Network monitoring resumed")
+    private fun handleNetworkRecovery() {
+        if (!recoveryInProgress.compareAndSet(false, true)) {
+            Log.d(TAG, "Recovery already in progress, skipping")
+            return
+        }
+
+        scope.launch {
+            try {
+                val userId = userPreferences.getUserId()
+                if (userId == null) {
+                    Log.d(TAG, "User not logged in, skipping recovery")
+                    return@launch
+                }
+
+                reconnectWebSocket(userId)
+                syncManager.handleOnlineRecovery()
+                Log.d(TAG, "Recovery completed")
+
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Recovery failed: ${e.message}")
+            } finally {
+                recoveryInProgress.set(false)
+            }
+        }
     }
 
-    fun destroy() {
-        stopMonitoring()
-        scope.cancel()
+    private suspend fun reconnectWebSocket(userId: String) {
+        if (webSocketService.isConnected()) {
+            Log.d(TAG, "WebSocket already connected")
+            return
+        }
+
+        repeat(MAX_RECONNECT_ATTEMPTS) { attempt ->
+            val attemptNumber = attempt + 1
+            Log.d(TAG, "WS reconnect attempt $attemptNumber/$MAX_RECONNECT_ATTEMPTS")
+
+            webSocketService.disconnect()
+            webSocketService.connect(userId)
+
+            delay(RECONNECT_DELAY_BASE_MS * attemptNumber)
+
+            if (webSocketService.isConnected()) {
+                Log.d(TAG, "WS reconnected on attempt $attemptNumber")
+                return
+            }
+        }
+
+        Log.w(TAG, "WS reconnect failed after $MAX_RECONNECT_ATTEMPTS attempts")
     }
 
-    fun isMonitoringActive(): Boolean = isMonitoring && monitoringJob?.isActive == true
+    fun hasInternetConnection(): Boolean = networkUtils.isOnline(context)
 }

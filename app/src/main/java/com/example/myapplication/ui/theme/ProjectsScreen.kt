@@ -1,27 +1,62 @@
 package com.example.myapplication.ui.theme
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SearchOff
+import androidx.compose.material.icons.filled.SupervisorAccount
+import androidx.compose.material.icons.filled.Title
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.example.myapplication.data.models.Project
-import com.example.myapplication.viewmodels.ObjectsViewModel
+import com.example.myapplication.ui.components.AppSearchBar
+import com.example.myapplication.ui.components.ConfirmationDialog
+import com.example.myapplication.ui.components.EmptyState
+import com.example.myapplication.ui.components.FilterOption
+import com.example.myapplication.ui.components.ProjectCard
+import com.example.myapplication.ui.components.SectionHeader
 import com.example.myapplication.viewmodels.ProjectFilterType
 import com.example.myapplication.viewmodels.ProjectsViewModel
-import java.text.SimpleDateFormat
-import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -34,16 +69,13 @@ fun ProjectsScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val currentFilter by viewModel.currentFilter.collectAsState()
 
-    val objectsViewModel: ObjectsViewModel = hiltViewModel()
-    val showDeleteProjectConfirmation by objectsViewModel.showDeleteProjectConfirmation.collectAsState()
-    val projectToDelete by objectsViewModel.projectToDelete.collectAsState()
+    val showDeleteConfirmation by viewModel.showDeleteConfirmation.collectAsState()
+    val projectToDelete by viewModel.projectToDelete.collectAsState()
 
     var isSearchActive by remember { mutableStateOf(false) }
     var showFilterMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        viewModel.loadProjects()
-        // Если интернет есть, синхронизируем с сервером
         if (viewModel.syncManager.hasInternetConnection()) {
             viewModel.loadProjectsFromServer()
         }
@@ -52,93 +84,24 @@ fun ProjectsScreen(
     Scaffold(
         floatingActionButton = {
             FloatingActionButton(
-                onClick = {
-                    navController.navigate("create_project/none")
-                },
+                onClick = { navController.navigate("create_project/none") },
                 containerColor = MaterialTheme.colorScheme.primary
             ) {
                 Icon(Icons.Default.Add, contentDescription = "Создать смету")
             }
         },
         topBar = {
-            TopAppBar(
-                title = {
-                    if (isSearchActive) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            IconButton(onClick = { showFilterMenu = true }) {
-                                Icon(
-                                    when (currentFilter) {
-                                        ProjectFilterType.BY_NAME -> Icons.Default.Title
-                                        ProjectFilterType.BY_DESCRIPTION -> Icons.Default.Description
-                                        ProjectFilterType.BY_CUSTOMER -> Icons.Default.Person
-                                        ProjectFilterType.BY_FOREMAN -> Icons.Default.Build
-                                        ProjectFilterType.BY_MANAGER -> Icons.Default.SupervisorAccount
-                                    },
-                                    contentDescription = "Фильтр",
-                                    tint = Color.White
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(8.dp))
-
-                            TextField(
-                                value = searchQuery,
-                                onValueChange = { viewModel.updateSearchQuery(it) },
-                                modifier = Modifier.weight(1f),
-                                placeholder = {
-                                    Text(
-                                        when (currentFilter) {
-                                            ProjectFilterType.BY_NAME -> "Поиск по названию..."
-                                            ProjectFilterType.BY_DESCRIPTION -> "Поиск по описанию..."
-                                            ProjectFilterType.BY_CUSTOMER -> "Поиск по заказчику..."
-                                            ProjectFilterType.BY_FOREMAN -> "Поиск по прорабу..."
-                                            ProjectFilterType.BY_MANAGER -> "Поиск по менеджеру..."
-                                        }
-                                    )
-                                },
-                                singleLine = true,
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent,
-                                    focusedTextColor = Color.Black,
-                                    unfocusedTextColor = Color.Black
-                                )
-                            )
-
-                            IconButton(onClick = {
-                                isSearchActive = false
-                                viewModel.clearSearch()
-                            }) {
-                                Icon(Icons.Default.Close, contentDescription = "Закрыть", tint = Color.White)
-                            }
-                        }
-                    } else {
-                        Text(
-                            "Сметы",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
-                        )
-                    }
-                },
-                navigationIcon = { },
-                actions = {
-                    if (!isSearchActive) {
-                        IconButton(onClick = { isSearchActive = true }) {
-                            Icon(Icons.Default.Search, contentDescription = "Поиск", tint = Color.White)
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Black,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White,
-                    actionIconContentColor = Color.White
-                )
+            ProjectsTopBar(
+                isSearchActive = isSearchActive,
+                searchQuery = searchQuery,
+                currentFilter = currentFilter,
+                onSearchToggle = { isSearchActive = it },
+                onSearchQueryChange = viewModel::updateSearchQuery,
+                onFilterClick = { showFilterMenu = true },
+                onClose = {
+                    isSearchActive = false
+                    viewModel.clearSearch()
+                }
             )
         }
     ) { paddingValues ->
@@ -148,10 +111,8 @@ fun ProjectsScreen(
                 .padding(paddingValues)
         ) {
             GradientDivider()
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-            ) {
+
+            Box(modifier = Modifier.fillMaxSize()) {
                 when {
                     isLoading -> {
                         CircularProgressIndicator(
@@ -160,11 +121,19 @@ fun ProjectsScreen(
                     }
 
                     filteredProjects.isEmpty() && searchQuery.isNotBlank() -> {
-                        NoSearchResultsContent(searchQuery)
+                        EmptyState(
+                            icon = Icons.Default.SearchOff,
+                            title = "Ничего не найдено",
+                            subtitle = "По запросу \"$searchQuery\""
+                        )
                     }
 
                     filteredProjects.isEmpty() -> {
-                        EmptyProjectsContent()
+                        EmptyState(
+                            icon = Icons.Default.Receipt,
+                            title = "У вас пока нет смет",
+                            subtitle = "Нажмите + чтобы создать смету"
+                        )
                     }
 
                     else -> {
@@ -172,22 +141,14 @@ fun ProjectsScreen(
                             contentPadding = PaddingValues(16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(filteredProjects) { project ->
+                            items(filteredProjects, key = { it.id }) { project ->
                                 ProjectCard(
                                     project = project,
-                                    onClick = {
-                                        navController.navigate("view_project/${project.id}")
-                                    },
-                                    onShare = {},
-                                    onEdit = {
-                                        navController.navigate("edit_project/${project.id}")
-                                    },
-                                    onMove = {
-                                        navController.navigate("move_project/${project.id}/none")
-                                    },
-                                    onDelete = {
-                                        objectsViewModel.showDeleteProjectConfirmation(project)
-                                    }
+                                    onClick = { navController.navigate("view_project/${project.id}") },
+                                    onShare = { },
+                                    onEdit = { navController.navigate("edit_project/${project.id}") },
+                                    onMove = { navController.navigate("move_project/${project.id}/none") },
+                                    onDelete = { viewModel.showDeleteProjectConfirmation(project) }
                                 )
                             }
                         }
@@ -197,323 +158,137 @@ fun ProjectsScreen(
         }
     }
 
-
     if (showFilterMenu) {
-        AlertDialog(
-            onDismissRequest = { showFilterMenu = false },
-            title = { Text("Выберите тип поиска") },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        "Основные",
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 12.sp,
-                        color = Color.Gray
-                    )
-
-                    FilterOptionCard(
-                        title = "По названию",
-                        isSelected = currentFilter == ProjectFilterType.BY_NAME,
-                        onClick = {
-                            viewModel.updateSearchFilter(ProjectFilterType.BY_NAME)
-                            showFilterMenu = false
-                        },
-                        icon = Icons.Default.Title
-                    )
-
-                    FilterOptionCard(
-                        title = "По описанию",
-                        isSelected = currentFilter == ProjectFilterType.BY_DESCRIPTION,
-                        onClick = {
-                            viewModel.updateSearchFilter(ProjectFilterType.BY_DESCRIPTION)
-                            showFilterMenu = false
-                        },
-                        icon = Icons.Default.Description
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        "Контакты",
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 12.sp,
-                        color = Color.Gray
-                    )
-
-                    FilterOptionCard(
-                        title = "По заказчику",
-                        isSelected = currentFilter == ProjectFilterType.BY_CUSTOMER,
-                        onClick = {
-                            viewModel.updateSearchFilter(ProjectFilterType.BY_CUSTOMER)
-                            showFilterMenu = false
-                        },
-                        icon = Icons.Default.Person
-                    )
-
-                    FilterOptionCard(
-                        title = "По прорабу",
-                        isSelected = currentFilter == ProjectFilterType.BY_FOREMAN,
-                        onClick = {
-                            viewModel.updateSearchFilter(ProjectFilterType.BY_FOREMAN)
-                            showFilterMenu = false
-                        },
-                        icon = Icons.Default.Build
-                    )
-
-                    FilterOptionCard(
-                        title = "По менеджеру",
-                        isSelected = currentFilter == ProjectFilterType.BY_MANAGER,
-                        onClick = {
-                            viewModel.updateSearchFilter(ProjectFilterType.BY_MANAGER)
-                            showFilterMenu = false
-                        },
-                        icon = Icons.Default.SupervisorAccount
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showFilterMenu = false }) {
-                    Text("Отмена")
-                }
-            }
+        ProjectsFilterDialog(
+            currentFilter = currentFilter,
+            onFilterSelected = viewModel::updateSearchFilter,
+            onDismiss = { showFilterMenu = false }
         )
     }
 
-    if (showDeleteProjectConfirmation && projectToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { objectsViewModel.hideDeleteProjectConfirmation() },
-            title = { Text("Удалить смету") },
-            text = {
-                Text("Вы уверены, что хотите удалить смету \"${projectToDelete!!.name}\"? Все материалы и работы будут удалены безвозвратно.")
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        objectsViewModel.confirmDeleteProject()
-                    }
-                ) {
-                    Text("Удалить", color = Color.Red)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { objectsViewModel.hideDeleteProjectConfirmation() }) {
-                    Text("Отмена")
-                }
-            }
+    if (showDeleteConfirmation && projectToDelete != null) {
+        ConfirmationDialog(
+            title = "Удалить смету",
+            message = "Вы уверены, что хотите удалить смету \"${projectToDelete!!.name}\"? Все материалы и работы будут удалены безвозвратно.",
+            onConfirm = { viewModel.confirmDeleteProject() },
+            onDismiss = { viewModel.hideDeleteProjectConfirmation() }
         )
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FilterOptionCard(
-    title: String,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    icon: androidx.compose.ui.graphics.vector.ImageVector
+private fun ProjectsTopBar(
+    isSearchActive: Boolean,
+    searchQuery: String,
+    currentFilter: ProjectFilterType,
+    onSearchToggle: (Boolean) -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onFilterClick: () -> Unit,
+    onClose: () -> Unit
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() },
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected)
-                MaterialTheme.colorScheme.primaryContainer
-            else MaterialTheme.colorScheme.surfaceVariant
+    TopAppBar(
+        title = {
+            if (isSearchActive) {
+                AppSearchBar(
+                    query = searchQuery,
+                    onQueryChange = onSearchQueryChange,
+                    placeholder = getProjectSearchPlaceholder(currentFilter),
+                    filterIcon = getProjectFilterIcon(currentFilter),
+                    onFilterClick = onFilterClick,
+                    onClose = onClose
+                )
+            } else {
+                Text("Сметы", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            }
+        },
+        actions = {
+            if (!isSearchActive) {
+                IconButton(onClick = { onSearchToggle(true) }) {
+                    Icon(Icons.Default.Search, contentDescription = "Поиск", tint = Color.White)
+                }
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = Color.Black,
+            titleContentColor = Color.White,
+            actionIconContentColor = Color.White
         )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                modifier = Modifier.size(24.dp),
-                tint = if (isSelected)
-                    MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = title,
-                color = if (isSelected)
-                    MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurface
-            )
-        }
-    }
+    )
 }
 
 @Composable
-fun ProjectCard(
-    project: Project,
-    onClick: () -> Unit,
-    onShare: () -> Unit,
-    onEdit: () -> Unit,
-    onMove: () -> Unit,
-    onDelete: () -> Unit
+private fun ProjectsFilterDialog(
+    currentFilter: ProjectFilterType,
+    onFilterSelected: (ProjectFilterType) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    val dateFormat = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault())
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() },
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = project.name,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    if (project.description.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = project.description,
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Выберите тип поиска") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SectionHeader(title = "Основные")
+                listOf(
+                    ProjectFilterType.BY_NAME,
+                    ProjectFilterType.BY_DESCRIPTION
+                ).forEach { filter ->
+                    FilterOption(
+                        title = getProjectFilterName(filter),
+                        icon = getProjectFilterIcon(filter),
+                        isSelected = currentFilter == filter
+                    ) {
+                        onFilterSelected(filter)
+                        onDismiss()
                     }
                 }
 
-                Row {
-                    IconButton(onClick = onShare) {
-                        Icon(
-                            Icons.Default.Share,
-                            contentDescription = "Поделиться",
-                            modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    IconButton(onClick = onEdit) {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = "Редактировать",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    IconButton(onClick = onMove) {
-                        Icon(
-                            Icons.Default.SwapHoriz,
-                            contentDescription = "Переместить",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    IconButton(onClick = onDelete) {
-                        Icon(
-                            Icons.Default.Delete,
-                            contentDescription = "Удалить",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(20.dp)
-                        )
+                Spacer(modifier = Modifier.height(8.dp))
+                SectionHeader(title = "Контакты")
+                listOf(
+                    ProjectFilterType.BY_CUSTOMER,
+                    ProjectFilterType.BY_FOREMAN,
+                    ProjectFilterType.BY_MANAGER
+                ).forEach { filter ->
+                    FilterOption(
+                        title = getProjectFilterName(filter),
+                        icon = getProjectFilterIcon(filter),
+                        isSelected = currentFilter == filter
+                    ) {
+                        onFilterSelected(filter)
+                        onDismiss()
                     }
                 }
             }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "Бюджет: ${String.format(Locale.US, "%.2f", project.totalBudget)} ₽",
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Medium
-                )
-
-                Text(
-                    text = dateFormat.format(project.createdAt),
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                )
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Отмена")
             }
         }
-    }
+    )
 }
 
-@Composable
-fun NoSearchResultsContent(query: String) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            Icons.Default.SearchOff,
-            contentDescription = null,
-            modifier = Modifier.size(80.dp),
-            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = "Ничего не найдено",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Medium
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "По запросу \"$query\" ничего не найдено",
-            fontSize = 14.sp,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-        )
-    }
+private fun getProjectFilterIcon(filter: ProjectFilterType): ImageVector = when (filter) {
+    ProjectFilterType.BY_NAME -> Icons.Default.Title
+    ProjectFilterType.BY_DESCRIPTION -> Icons.Default.Description
+    ProjectFilterType.BY_CUSTOMER -> Icons.Default.Person
+    ProjectFilterType.BY_FOREMAN -> Icons.Default.Build
+    ProjectFilterType.BY_MANAGER -> Icons.Default.SupervisorAccount
 }
 
-@Composable
-fun EmptyProjectsContent() {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            Icons.Default.Receipt,
-            contentDescription = null,
-            modifier = Modifier.size(80.dp),
-            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-        )
+private fun getProjectFilterName(filter: ProjectFilterType): String = when (filter) {
+    ProjectFilterType.BY_NAME -> "По названию"
+    ProjectFilterType.BY_DESCRIPTION -> "По описанию"
+    ProjectFilterType.BY_CUSTOMER -> "По заказчику"
+    ProjectFilterType.BY_FOREMAN -> "По прорабу"
+    ProjectFilterType.BY_MANAGER -> "По менеджеру"
+}
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text(
-            text = "У вас пока нет смет",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Medium
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = "Нажмите + чтобы создать смету",
-            fontSize = 14.sp,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-        )
-    }
+private fun getProjectSearchPlaceholder(filter: ProjectFilterType): String = when (filter) {
+    ProjectFilterType.BY_NAME -> "Поиск по названию..."
+    ProjectFilterType.BY_DESCRIPTION -> "Поиск по описанию..."
+    ProjectFilterType.BY_CUSTOMER -> "Поиск по заказчику..."
+    ProjectFilterType.BY_FOREMAN -> "Поиск по прорабу..."
+    ProjectFilterType.BY_MANAGER -> "Поиск по менеджеру..."
 }

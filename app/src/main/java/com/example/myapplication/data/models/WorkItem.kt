@@ -33,9 +33,7 @@ data class WorkItem(
     val notes: String = "",
     val userId: String = ""
 ) {
-    // Стоимость работы (часы × ставка)
     val laborCost: Double get() = laborHours * hourlyRate
 
-    // Общая стоимость (работа + материалы)
     val totalCost: Double get() = laborCost + materialCost
 }

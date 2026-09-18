@@ -1,17 +1,20 @@
 package com.example.estimateserver.service;
 
 import com.example.estimateserver.dto.SyncMessage;
-import com.example.estimateserver.model.ShareStatus;
 import com.example.estimateserver.model.*;
 import com.example.estimateserver.repository.*;
-import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
 import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
 public class SyncService {
+
+    private static final Logger log = LoggerFactory.getLogger(SyncService.class);
 
     private final ProjectRepository projectRepository;
     private final MaterialRepository materialRepository;
@@ -43,11 +46,9 @@ public class SyncService {
         this.webSocketService = webSocketService;
     }
 
-
     @Transactional
     public Project createProject(Project project, String userId) {
         project.setUserId(userId);
-        project.setOwnerId(userId);
         project.setCreatedBy(userId);
         project.setCreatedAt(new Date());
         project.setUpdatedAt(new Date());
@@ -55,56 +56,53 @@ public class SyncService {
 
         Project saved = projectRepository.save(project);
 
-        System.out.println("=== CREATE PROJECT ===");
-        System.out.println("Project ID: " + saved.getId());
-        System.out.println("User ID: " + userId);
-        System.out.println("Project userId: " + saved.getUserId());
-
-        SyncMessage message = new SyncMessage(
-                "CREATE", "PROJECT", saved.getId(), saved,
-                userId, new Date(), saved.getVersion()
-        );
-        webSocketService.sendToUser(userId, message);
-
+        sendToUser(userId, "CREATE", "PROJECT", saved.getId(), saved, saved.getVersion());
         shareProjectWithContacts(saved, userId);
 
+        log.info("Project created: {} by user {}", saved.getId(), userId);
         return saved;
     }
 
     @Transactional
     public Project updateProject(Project project, String userId) {
-        Optional<Project> existing = projectRepository.findById(project.getId());
-        if (existing.isEmpty()) {
-            System.out.println("=== PROJECT NOT FOUND, CREATING NEW ===");
+        Project oldProject = projectRepository.findById(project.getId()).orElse(null);
+        if (oldProject == null) {
             return createProject(project, userId);
         }
-
-        Project oldProject = existing.get();
-
-        System.out.println("=== UPDATE PROJECT ===");
-        System.out.println("Project ID: " + project.getId());
-        System.out.println("Project Name: " + project.getName());
-        System.out.println("OLD objectId: '" + oldProject.getObjectId() + "'");
-        System.out.println("NEW objectId: '" + project.getObjectId() + "'");
-        System.out.println("Header userId: " + userId);
-        System.out.println("Existing project.userId: " + oldProject.getUserId());
 
         project.setUpdatedAt(new Date());
         project.setLastModifiedBy(userId);
         project.setVersion(oldProject.getVersion());
-        project.setOwnerId(oldProject.getOwnerId());
         project.setUserId(oldProject.getUserId());
         project.setCreatedAt(oldProject.getCreatedAt());
         project.setCreatedBy(oldProject.getCreatedBy());
 
         Project saved = projectRepository.save(project);
 
-        System.out.println("SAVED objectId: '" + saved.getObjectId() + "'");
-        System.out.println("Saved project.userId: " + saved.getUserId());
-
         notifyProjectParticipants(saved.getId(), "UPDATE", "PROJECT", saved, userId);
         notifyNewContacts(oldProject, saved, userId);
 
+        log.info("Project updated: {}", saved.getId());
+        return saved;
+    }
+
+    @Transactional
+    public Project saveProject(Project project, String userId) {
+        Project oldProject = projectRepository.findById(project.getId()).orElse(null);
+
+        if (oldProject == null) {
+            return createProject(project, userId);
+        }
+
+        project.setUserId(oldProject.getUserId());
+        project.setCreatedAt(oldProject.getCreatedAt());
+        project.setCreatedBy(oldProject.getCreatedBy());
+        project.setUpdatedAt(new Date());
+        project.setLastModifiedBy(userId);
+        project.setVersion(oldProject.getVersion());
+
+        Project saved = projectRepository.save(project);
+        notifyProjectParticipants(saved.getId(), "UPDATE", "PROJECT", saved, userId);
         return saved;
     }
 
@@ -115,20 +113,28 @@ public class SyncService {
         if (!project.getUserId().equals(userId)) {
             throw new RuntimeException("Only owner can delete project");
         }
+        deleteProjectInternal(projectId, userId, true);
+    }
 
-        List<String> affectedUserIds = findUsersWithAccessToProject(projectId);
+    private void deleteProjectInternal(String projectId, String userId, boolean notifyParticipants) {
+        List<String> affectedUserIds = notifyParticipants
+                ? findUsersWithAccessToProject(projectId)
+                : Collections.emptyList();
+
+        long materialsDeleted = materialRepository.deleteByProjectId(projectId);
+        long worksDeleted = workItemRepository.deleteByProjectId(projectId);
+        long sharesDeleted = sharedProjectRepository.deleteByProjectId(projectId);
+
         projectRepository.deleteById(projectId);
 
-        List<SharedProject> shares = sharedProjectRepository.findByProjectId(projectId);
-        sharedProjectRepository.deleteAll(shares);
-
-        for (String affectedUserId : affectedUserIds) {
-            SyncMessage message = new SyncMessage(
-                    "DELETE", "PROJECT", projectId, null,
-                    userId, new Date(), null
-            );
-            webSocketService.sendToUser(affectedUserId, message);
+        if (notifyParticipants) {
+            for (String affectedUserId : affectedUserIds) {
+                sendToUser(affectedUserId, "DELETE", "PROJECT", projectId, null, null);
+            }
         }
+
+        log.info("Project {} deleted (materials: {}, works: {}, shares: {})",
+                projectId, materialsDeleted, worksDeleted, sharesDeleted);
     }
 
     public List<Project> getProjects() {
@@ -140,28 +146,15 @@ public class SyncService {
     }
 
     public List<Project> getProjectsForUser(String userId) {
-        Set<Project> allProjects = new HashSet<>();
-
-        List<Project> ownedProjects = projectRepository.findByUserId(userId);
-        allProjects.addAll(ownedProjects);
-
-        List<String> sharedProjectIds = sharedProjectRepository.findSharedProjectIdsByUser(userId);
-        if (!sharedProjectIds.isEmpty()) {
-            List<Project> sharedProjects = projectRepository.findAllById(sharedProjectIds);
-            allProjects.addAll(sharedProjects);
-        }
-
-        return new ArrayList<>(allProjects);
+        return projectRepository.findAllAccessibleForUser(userId);
     }
 
+    public List<Project> getProjectsSharedWithUser(String userId) {
+        return projectRepository.findSharedWithUser(userId);
+    }
 
     @Transactional
     public void shareProjectWithUser(String projectId, String targetUserPhone, String sharedByUserId) {
-        System.out.println("=== SHARING PROJECT WITH COPY ===");
-        System.out.println("Project ID: " + projectId);
-        System.out.println("Target phone: " + targetUserPhone);
-        System.out.println("Shared by user: " + sharedByUserId);
-
         Project originalProject = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
@@ -172,93 +165,123 @@ public class SyncService {
         User targetUser = userRepository.findByPhoneNumber(targetUserPhone)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-
-
-        Project sharedProjectCopy = new Project();
-        sharedProjectCopy.setName(originalProject.getName());
-        sharedProjectCopy.setDescription(originalProject.getDescription());
-        sharedProjectCopy.setObjectId(null);
-        sharedProjectCopy.setUserId(targetUser.getId());
-        sharedProjectCopy.setOwnerId(targetUser.getId());
-        sharedProjectCopy.setCreatedBy(sharedByUserId);
-        sharedProjectCopy.setCreatedAt(new Date());
-        sharedProjectCopy.setUpdatedAt(new Date());
-        sharedProjectCopy.setStatus("ACTIVE");
-        sharedProjectCopy.setTotalBudget(originalProject.getTotalBudget());
-        sharedProjectCopy.setTotalSpent(0.0);
-
-        sharedProjectCopy.setCustomerContactId(originalProject.getCustomerContactId());
-        sharedProjectCopy.setForemanContactId(originalProject.getForemanContactId());
-        sharedProjectCopy.setManagerContactId(originalProject.getManagerContactId());
-        sharedProjectCopy.setIncludeForeman(originalProject.isIncludeForeman());
-        sharedProjectCopy.setIncludeManager(originalProject.isIncludeManager());
-
-        Project savedCopy = projectRepository.save(sharedProjectCopy);
-        System.out.println("✅ Created NEW copy of project with ID: " + savedCopy.getId());
-
-        List<Material> materials = materialRepository.findByProjectId(projectId);
-        for (Material material : materials) {
-            Material materialCopy = new Material();
-            materialCopy.setProjectId(savedCopy.getId());
-            materialCopy.setName(material.getName());
-            materialCopy.setQuantity(material.getQuantity());
-            materialCopy.setUnit(material.getUnit());
-            materialCopy.setUnitPrice(material.getUnitPrice());
-            materialCopy.setCategory(material.getCategory());
-            materialCopy.setNotes(material.getNotes());
-            materialCopy.setUserId(targetUser.getId());
-            materialRepository.save(materialCopy);
-        }
-        System.out.println("✅ Copied " + materials.size() + " materials");
-
-        List<WorkItem> workItems = workItemRepository.findByProjectId(projectId);
-        for (WorkItem workItem : workItems) {
-            WorkItem workCopy = new WorkItem();
-            workCopy.setProjectId(savedCopy.getId());
-            workCopy.setName(workItem.getName());
-            workCopy.setStage(workItem.getStage());
-            workCopy.setLaborHours(workItem.getLaborHours());
-            workCopy.setHourlyRate(workItem.getHourlyRate());
-            workCopy.setMaterialCost(workItem.getMaterialCost());
-            workCopy.setNotes(workItem.getNotes());
-            workCopy.setUserId(targetUser.getId());
-            workItemRepository.save(workCopy);
-        }
-        System.out.println("✅ Copied " + workItems.size() + " work items");
+        Project savedCopy = createSharedProjectCopy(originalProject, targetUser, sharedByUserId);
+        copyMaterialsAndWorks(projectId, savedCopy.getId(), targetUser.getId());
 
         SharedProject shared = new SharedProject(projectId, targetUser.getId(), sharedByUserId, "READ");
         shared.setStatus(ShareStatus.ACCEPTED);
         shared.setRespondedAt(new Date());
         sharedProjectRepository.save(shared);
 
-        SyncMessage message = new SyncMessage(
-                "CREATE",
-                "PROJECT",
-                savedCopy.getId(),
-                savedCopy,
-                sharedByUserId,
-                new Date(),
-                0L
-        );
-        webSocketService.sendToUser(targetUser.getId(), message);
+        sendToUser(targetUser.getId(), "CREATE", "PROJECT", savedCopy.getId(), savedCopy, 0L);
 
-        System.out.println("📤 Sent WebSocket notification to user: " + targetUser.getId());
-        System.out.println("=== SHARING COMPLETED ===");
+        log.info("Project {} shared with user {} (copy id: {})",
+                projectId, targetUser.getId(), savedCopy.getId());
     }
 
-
-    public List<Project> getProjectsSharedWithUser(String userId) {
-        List<String> sharedProjectIds = sharedProjectRepository.findSharedProjectIdsByUser(userId);
-        if (sharedProjectIds.isEmpty()) return new ArrayList<>();
-        return projectRepository.findAllById(sharedProjectIds);
+    private Project createSharedProjectCopy(Project original, User targetUser, String sharedByUserId) {
+        Project copy = new Project();
+        copy.setName(original.getName());
+        copy.setDescription(original.getDescription());
+        copy.setObjectId(null);
+        copy.setUserId(targetUser.getId());
+        copy.setCreatedBy(sharedByUserId);
+        copy.setCreatedAt(new Date());
+        copy.setUpdatedAt(new Date());
+        copy.setStatus("ACTIVE");
+        copy.setTotalBudget(original.getTotalBudget());
+        copy.setTotalSpent(0.0);
+        copy.setCustomerContactId(original.getCustomerContactId());
+        copy.setForemanContactId(original.getForemanContactId());
+        copy.setManagerContactId(original.getManagerContactId());
+        copy.setIncludeForeman(original.isIncludeForeman());
+        copy.setIncludeManager(original.isIncludeManager());
+        return projectRepository.save(copy);
     }
 
+    private void copyMaterialsAndWorks(String sourceProjectId, String targetProjectId, String targetUserId) {
+        List<Material> materials = materialRepository.findByProjectId(sourceProjectId);
+        if (!materials.isEmpty()) {
+            List<Material> copies = materials.stream()
+                    .map(m -> copyMaterial(m, targetProjectId, targetUserId))
+                    .collect(Collectors.toList());
+            materialRepository.saveAll(copies);
+        }
+
+        List<WorkItem> workItems = workItemRepository.findByProjectId(sourceProjectId);
+        if (!workItems.isEmpty()) {
+            List<WorkItem> copies = workItems.stream()
+                    .map(w -> copyWorkItem(w, targetProjectId, targetUserId))
+                    .collect(Collectors.toList());
+            workItemRepository.saveAll(copies);
+        }
+
+        log.debug("Copied {} materials and {} works to project {}",
+                materials.size(), workItems.size(), targetProjectId);
+    }
+
+    private Material copyMaterial(Material src, String targetProjectId, String targetUserId) {
+        Material copy = new Material();
+        copy.setProjectId(targetProjectId);
+        copy.setName(src.getName());
+        copy.setQuantity(src.getQuantity());
+        copy.setUnit(src.getUnit());
+        copy.setUnitPrice(src.getUnitPrice());
+        copy.setCategory(src.getCategory());
+        copy.setNotes(src.getNotes());
+        copy.setUserId(targetUserId);
+        return copy;
+    }
+
+    private WorkItem copyWorkItem(WorkItem src, String targetProjectId, String targetUserId) {
+        WorkItem copy = new WorkItem();
+        copy.setProjectId(targetProjectId);
+        copy.setName(src.getName());
+        copy.setStage(src.getStage());
+        copy.setLaborHours(src.getLaborHours());
+        copy.setHourlyRate(src.getHourlyRate());
+        copy.setMaterialCost(src.getMaterialCost());
+        copy.setNotes(src.getNotes());
+        copy.setUserId(targetUserId);
+        return copy;
+    }
+
+    public List<SharedProject> getPendingSharesForUser(String userId) {
+        return sharedProjectRepository.findBySharedWithUserIdAndStatus(userId, ShareStatus.PENDING);
+    }
+
+    public List<Project> getPendingProjectsForUser(String userId) {
+        List<String> ids = sharedProjectRepository
+                .findSharedProjectIdsByUserAndStatus(userId, ShareStatus.PENDING);
+        if (ids.isEmpty()) return Collections.emptyList();
+        return projectRepository.findAllById(ids);
+    }
+
+    @Transactional
+    public void acceptShare(String projectId, String userId) {
+        sharedProjectRepository.findByProjectIdAndSharedWithUserId(projectId, userId)
+                .ifPresent(share -> {
+                    share.setStatus(ShareStatus.ACCEPTED);
+                    share.setRespondedAt(new Date());
+                    sharedProjectRepository.save(share);
+                    sendToUser(share.getSharedByUserId(), "SHARE_ACCEPTED", "PROJECT", projectId, null, null);
+                });
+    }
+
+    @Transactional
+    public void declineShare(String projectId, String userId) {
+        sharedProjectRepository.findByProjectIdAndSharedWithUserId(projectId, userId)
+                .ifPresent(share -> {
+                    share.setStatus(ShareStatus.DECLINED);
+                    share.setRespondedAt(new Date());
+                    sharedProjectRepository.save(share);
+                    sendToUser(share.getSharedByUserId(), "SHARE_DECLINED", "PROJECT", projectId, null, null);
+                });
+    }
 
     @Transactional
     public Material addMaterial(Material material, String userId) {
-        if (!hasAccessToProject(material.getProjectId(), userId)) {
-            throw new RuntimeException("Access denied");
-        }
+        requireProjectAccess(material.getProjectId(), userId);
 
         material.setUserId(userId);
         Material saved = materialRepository.save(material);
@@ -270,9 +293,7 @@ public class SyncService {
 
     @Transactional
     public Material updateMaterial(Material material, String userId) {
-        if (!hasAccessToProject(material.getProjectId(), userId)) {
-            throw new RuntimeException("Access denied");
-        }
+        requireProjectAccess(material.getProjectId(), userId);
 
         Material saved = materialRepository.save(material);
 
@@ -283,24 +304,21 @@ public class SyncService {
 
     @Transactional
     public void deleteMaterial(String materialId, String userId) {
-        Optional<Material> material = materialRepository.findById(materialId);
-        if (material.isPresent()) {
-            String projectId = material.get().getProjectId();
+        Material material = materialRepository.findById(materialId).orElse(null);
+        if (material == null) return;
 
-            if (!hasAccessToProject(projectId, userId)) {
-                throw new RuntimeException("Access denied");
-            }
+        requireProjectAccess(material.getProjectId(), userId);
 
-            materialRepository.deleteById(materialId);
-            notifyProjectParticipants(projectId, "DELETE", "MATERIAL", materialId, userId);
-            updateProjectTotal(projectId);
-        }
+        String projectId = material.getProjectId();
+        materialRepository.deleteById(materialId);
+
+        notifyProjectParticipants(projectId, "DELETE", "MATERIAL", materialId, userId);
+        updateProjectTotal(projectId);
     }
 
     public List<Material> getMaterials(String projectId) {
         return materialRepository.findByProjectId(projectId);
     }
-
 
     public WorkItem getWorkItemById(String id) {
         return workItemRepository.findById(id).orElse(null);
@@ -308,9 +326,7 @@ public class SyncService {
 
     @Transactional
     public WorkItem addWorkItem(WorkItem workItem, String userId) {
-        if (!hasAccessToProject(workItem.getProjectId(), userId)) {
-            throw new RuntimeException("Access denied");
-        }
+        requireProjectAccess(workItem.getProjectId(), userId);
 
         workItem.setUserId(userId);
         WorkItem saved = workItemRepository.save(workItem);
@@ -322,9 +338,7 @@ public class SyncService {
 
     @Transactional
     public WorkItem updateWorkItem(WorkItem workItem, String userId) {
-        if (!hasAccessToProject(workItem.getProjectId(), userId)) {
-            throw new RuntimeException("Access denied");
-        }
+        requireProjectAccess(workItem.getProjectId(), userId);
 
         WorkItem saved = workItemRepository.save(workItem);
 
@@ -335,18 +349,16 @@ public class SyncService {
 
     @Transactional
     public void deleteWorkItem(String workItemId, String userId) {
-        Optional<WorkItem> workItem = workItemRepository.findById(workItemId);
-        if (workItem.isPresent()) {
-            String projectId = workItem.get().getProjectId();
+        WorkItem workItem = workItemRepository.findById(workItemId).orElse(null);
+        if (workItem == null) return;
 
-            if (!hasAccessToProject(projectId, userId)) {
-                throw new RuntimeException("Access denied");
-            }
+        requireProjectAccess(workItem.getProjectId(), userId);
 
-            workItemRepository.deleteById(workItemId);
-            notifyProjectParticipants(projectId, "DELETE", "WORK_ITEM", workItemId, userId);
-            updateProjectTotal(projectId);
-        }
+        String projectId = workItem.getProjectId();
+        workItemRepository.deleteById(workItemId);
+
+        notifyProjectParticipants(projectId, "DELETE", "WORK_ITEM", workItemId, userId);
+        updateProjectTotal(projectId);
     }
 
     public List<WorkItem> getWorkItems(String projectId) {
@@ -355,29 +367,23 @@ public class SyncService {
 
     @Transactional
     public WorkItem markWorkItemAsCompleted(String workItemId, String userId) {
-        Optional<WorkItem> existing = workItemRepository.findById(workItemId);
-        if (existing.isPresent()) {
-            WorkItem workItem = existing.get();
+        WorkItem workItem = workItemRepository.findById(workItemId).orElse(null);
+        if (workItem == null) return null;
 
-            if (!hasAccessToProject(workItem.getProjectId(), userId)) {
-                throw new RuntimeException("Access denied");
-            }
+        requireProjectAccess(workItem.getProjectId(), userId);
 
-            workItem.setIsCompleted(true);
-            WorkItem saved = workItemRepository.save(workItem);
+        workItem.setIsCompleted(true);
+        WorkItem saved = workItemRepository.save(workItem);
 
-            notifyProjectParticipants(saved.getProjectId(), "UPDATE", "WORK_ITEM", saved, userId);
-            updateProjectTotal(saved.getProjectId());
-            return saved;
-        }
-        return null;
+        notifyProjectParticipants(saved.getProjectId(), "UPDATE", "WORK_ITEM", saved, userId);
+        updateProjectTotal(saved.getProjectId());
+        return saved;
     }
-
 
     public List<Contact> searchContactsByPhoneForUser(String phone, String userId) {
         String normalizedPhone = normalizePhoneNumber(phone);
         if (normalizedPhone == null || normalizedPhone.isEmpty()) {
-            return new ArrayList<>();
+            return Collections.emptyList();
         }
         return contactRepository.findByUserIdAndPhoneNumber(userId, normalizedPhone);
     }
@@ -387,17 +393,7 @@ public class SyncService {
         contact.setUserId(userId);
         Contact saved = contactRepository.save(contact);
 
-        System.out.println("=== CONTACT CREATED ===");
-        System.out.println("Contact ID: " + saved.getId());
-        System.out.println("Contact name: " + saved.getName());
-        System.out.println("User ID: " + userId);
-
-        SyncMessage message = new SyncMessage(
-                "CREATE", "CONTACT", saved.getId(), saved,
-                userId, new Date(), null
-        );
-        webSocketService.sendToUser(userId, message);
-
+        sendToUser(userId, "CREATE", "CONTACT", saved.getId(), saved, null);
         return saved;
     }
 
@@ -411,12 +407,7 @@ public class SyncService {
         contact.setUserId(userId);
         Contact saved = contactRepository.save(contact);
 
-        SyncMessage message = new SyncMessage(
-                "UPDATE", "CONTACT", saved.getId(), saved,
-                userId, new Date(), null
-        );
-        webSocketService.sendToUser(userId, message);
-
+        sendToUser(userId, "UPDATE", "CONTACT", saved.getId(), saved, null);
         return saved;
     }
 
@@ -427,25 +418,17 @@ public class SyncService {
             throw new RuntimeException("Access denied");
         }
 
-        List<ContactMethod> methods = contactMethodRepository.findByContactId(contactId);
-        contactMethodRepository.deleteAll(methods);
+        long methodsDeleted = contactMethodRepository.deleteByContactId(contactId);
         contactRepository.deleteById(contactId);
 
-        System.out.println("=== CONTACT DELETED ===");
-        System.out.println("Contact ID: " + contactId);
-        System.out.println("User ID: " + userId);
+        sendToUser(userId, "DELETE", "CONTACT", contactId, null, null);
 
-        SyncMessage message = new SyncMessage(
-                "DELETE", "CONTACT", contactId, null,
-                userId, new Date(), null
-        );
-        webSocketService.sendToUser(userId, message);
+        log.info("Contact {} deleted (methods: {})", contactId, methodsDeleted);
     }
 
     public List<Contact> getContactsForUser(String userId) {
         return contactRepository.findByUserId(userId);
     }
-
 
     @Transactional
     public ContactMethod addContactMethod(ContactMethod method, String userId) {
@@ -457,19 +440,13 @@ public class SyncService {
         method.setUserId(userId);
         ContactMethod saved = contactMethodRepository.save(method);
 
-        SyncMessage message = new SyncMessage(
-                "CREATE", "CONTACT_METHOD", saved.getId(), saved,
-                userId, new Date(), null
-        );
-        webSocketService.sendToUser(userId, message);
-
+        sendToUser(userId, "CREATE", "CONTACT_METHOD", saved.getId(), saved, null);
         return saved;
     }
 
     public List<ContactMethod> getContactMethods(String contactId) {
         return contactMethodRepository.findByContactId(contactId);
     }
-
 
     public List<ObjectModel> getRootObjectsForUser(String userId) {
         return objectRepository.findByParentObjectIdIsNullAndUserId(userId);
@@ -493,17 +470,10 @@ public class SyncService {
 
     @Transactional
     public ObjectModel createObject(ObjectModel object, String userId) {
-        System.out.println("=== CREATE OBJECT ===");
-        System.out.println("Object name: " + object.getName());
-        System.out.println("Parent ID: " + object.getParentObjectId());
-        System.out.println("User ID: " + userId);
-
         object.setUserId(userId);
         ObjectModel saved = objectRepository.save(object);
 
-        System.out.println("Saved object ID: " + saved.getId());
-        System.out.println("Saved parent ID: " + saved.getParentObjectId());
-
+        log.info("Object created: {} (parent: {})", saved.getId(), saved.getParentObjectId());
         return saved;
     }
 
@@ -517,31 +487,46 @@ public class SyncService {
         object.setUserId(userId);
         ObjectModel saved = objectRepository.save(object);
 
-        SyncMessage message = new SyncMessage(
-                "UPDATE", "OBJECT", saved.getId(), saved,
-                userId, new Date(), null
-        );
-        webSocketService.sendToUser(userId, message);
-
+        sendToUser(userId, "UPDATE", "OBJECT", saved.getId(), saved, null);
         return saved;
     }
 
     @Transactional
     public void deleteObject(String objectId, String userId) {
-        ObjectModel object = objectRepository.findById(objectId).orElse(null);
-        if (object == null || !object.getUserId().equals(userId)) {
+        ObjectModel root = objectRepository.findById(objectId).orElse(null);
+        if (root == null || !root.getUserId().equals(userId)) {
             throw new RuntimeException("Access denied");
         }
 
-        objectRepository.deleteById(objectId);
+        List<ObjectModel> allObjects = new ArrayList<>();
+        allObjects.add(root);
+        collectChildObjectsRecursive(objectId, userId, allObjects);
 
-        SyncMessage message = new SyncMessage(
-                "DELETE", "OBJECT", objectId, null,
-                userId, new Date(), null
-        );
-        webSocketService.sendToUser(userId, message);
+        List<String> objectIds = allObjects.stream()
+                .map(ObjectModel::getId)
+                .collect(Collectors.toList());
+
+        List<Project> projectsToDelete = projectRepository.findAllByObjectIdIn(objectIds);
+
+        for (Project p : projectsToDelete) {
+            deleteProjectInternal(p.getId(), userId, false);
+        }
+
+        objectRepository.deleteAllInBatch(allObjects);
+
+        sendToUser(userId, "DELETE", "OBJECT", objectId, null, null);
+
+        log.info("Object cascade deleted: {} (sub-objects: {}, projects: {})",
+                objectId, allObjects.size() - 1, projectsToDelete.size());
     }
 
+    private void collectChildObjectsRecursive(String parentId, String userId, List<ObjectModel> acc) {
+        List<ObjectModel> children = objectRepository.findByParentObjectIdAndUserId(parentId, userId);
+        for (ObjectModel child : children) {
+            acc.add(child);
+            collectChildObjectsRecursive(child.getId(), userId, acc);
+        }
+    }
 
     public Optional<User> getUserById(String userId) {
         return userRepository.findById(userId);
@@ -551,86 +536,78 @@ public class SyncService {
         return userRepository.findByPhoneNumber(phoneNumber);
     }
 
+    public boolean hasAccessToProject(String projectId, String userId) {
+        return projectRepository.hasUserAccessToProject(projectId, userId);
+    }
+
+    private void requireProjectAccess(String projectId, String userId) {
+        if (!hasAccessToProject(projectId, userId)) {
+            throw new RuntimeException("Access denied");
+        }
+    }
+
+    private void sendToUser(String userId, String type, String entityType,
+                            String entityId, Object data, Long version) {
+        SyncMessage message = new SyncMessage(
+                type, entityType, entityId, data,
+                userId, new Date(), version
+        );
+        webSocketService.sendToUser(userId, message);
+    }
 
     private void shareProjectWithContacts(Project project, String senderId) {
-        Set<String> phoneNumbers = getContactPhones(project);
-
-        for (String phoneNumber : phoneNumbers) {
-            Optional<User> userOpt = userRepository.findByPhoneNumber(phoneNumber);
-            if (userOpt.isPresent() && !userOpt.get().getId().equals(senderId)) {
-                User user = userOpt.get();
-
-                if (!sharedProjectRepository.existsByProjectIdAndSharedWithUserId(project.getId(), user.getId())) {
-                    SharedProject shared = new SharedProject(project.getId(), user.getId(), senderId, "READ");
-                    sharedProjectRepository.save(shared);
-                }
-
-                SyncMessage message = new SyncMessage(
-                        "SHARE", "PROJECT", project.getId(), project,
-                        senderId, new Date(),
-                        project.getVersion() != null ? project.getVersion() : 0L
-                );
-                webSocketService.sendToUser(user.getId(), message);
-
-                System.out.println("Shared project '" + project.getName() + "' with user " + user.getPhoneNumber());
-            }
+        for (String phoneNumber : getContactPhones(project)) {
+            userRepository.findByPhoneNumber(phoneNumber)
+                    .filter(user -> !user.getId().equals(senderId))
+                    .ifPresent(user -> {
+                        if (!sharedProjectRepository.existsByProjectIdAndSharedWithUserId(
+                                project.getId(), user.getId())) {
+                            sharedProjectRepository.save(new SharedProject(
+                                    project.getId(), user.getId(), senderId, "READ"));
+                        }
+                        sendToUser(user.getId(), "SHARE", "PROJECT", project.getId(), project,
+                                project.getVersion() != null ? project.getVersion() : 0L);
+                    });
         }
     }
 
     private void notifyNewContacts(Project oldProject, Project newProject, String senderId) {
         Set<String> oldPhones = getContactPhones(oldProject);
         Set<String> newPhones = getContactPhones(newProject);
-        Set<String> addedPhones = new HashSet<>(newPhones);
-        addedPhones.removeAll(oldPhones);
+        newPhones.removeAll(oldPhones);
 
-        for (String phoneNumber : addedPhones) {
-            Optional<User> userOpt = userRepository.findByPhoneNumber(phoneNumber);
-            if (userOpt.isPresent() && !userOpt.get().getId().equals(senderId)) {
-                User user = userOpt.get();
-
-                if (!sharedProjectRepository.existsByProjectIdAndSharedWithUserId(newProject.getId(), user.getId())) {
-                    SharedProject shared = new SharedProject(newProject.getId(), user.getId(), senderId, "READ");
-                    sharedProjectRepository.save(shared);
-                }
-
-                SyncMessage message = new SyncMessage(
-                        "SHARE", "PROJECT", newProject.getId(), newProject,
-                        senderId, new Date(), newProject.getVersion()
-                );
-                webSocketService.sendToUser(user.getId(), message);
-
-                System.out.println("Shared updated project '" + newProject.getName() + "' with new contact " + phoneNumber);
-            }
+        for (String phoneNumber : newPhones) {
+            userRepository.findByPhoneNumber(phoneNumber)
+                    .filter(user -> !user.getId().equals(senderId))
+                    .ifPresent(user -> {
+                        if (!sharedProjectRepository.existsByProjectIdAndSharedWithUserId(
+                                newProject.getId(), user.getId())) {
+                            sharedProjectRepository.save(new SharedProject(
+                                    newProject.getId(), user.getId(), senderId, "READ"));
+                        }
+                        sendToUser(user.getId(), "SHARE", "PROJECT", newProject.getId(),
+                                newProject, newProject.getVersion());
+                    });
         }
     }
 
     private Set<String> getContactPhones(Project project) {
         Set<String> phones = new HashSet<>();
-
-        if (project.getCustomerContactId() != null) {
-            addPhoneFromContact(project.getCustomerContactId(), phones);
-        }
-        if (project.getForemanContactId() != null) {
-            addPhoneFromContact(project.getForemanContactId(), phones);
-        }
-        if (project.getManagerContactId() != null) {
-            addPhoneFromContact(project.getManagerContactId(), phones);
-        }
-
+        addPhoneFromContact(project.getCustomerContactId(), phones);
+        addPhoneFromContact(project.getForemanContactId(), phones);
+        addPhoneFromContact(project.getManagerContactId(), phones);
         return phones;
     }
 
     private void addPhoneFromContact(String contactId, Set<String> phones) {
-        Optional<Contact> contactOpt = contactRepository.findById(contactId);
-        if (contactOpt.isPresent()) {
-            List<ContactMethod> methods = contactMethodRepository.findByContactId(contactId);
-            for (ContactMethod method : methods) {
-                String methodType = method.getMethodType().toLowerCase();
-                if (methodType.contains("телефон") || methodType.contains("phone")) {
-                    String phone = normalizePhoneNumber(method.getValue());
-                    if (phone != null && !phone.isEmpty()) {
-                        phones.add(phone);
-                    }
+        if (contactId == null) return;
+
+        for (ContactMethod method : contactMethodRepository.findByContactId(contactId)) {
+            String type = method.getMethodType().toLowerCase();
+            if (type.contains("???????") || type.contains("phone")) {
+                String phone = normalizePhoneNumber(method.getValue());
+                if (phone != null && !phone.isEmpty()) {
+                    phones.add(phone);
                 }
             }
         }
@@ -638,9 +615,7 @@ public class SyncService {
 
     private String normalizePhoneNumber(String phone) {
         if (phone == null) return null;
-
         String digits = phone.replaceAll("[^\\d]", "");
-
         if (digits.isEmpty()) return null;
 
         if (digits.startsWith("8") && digits.length() == 11) {
@@ -659,165 +634,53 @@ public class SyncService {
             }
             return "7" + last11;
         }
-
         return digits;
     }
 
     private List<String> findUsersWithAccessToProject(String projectId) {
         Set<String> userIds = new HashSet<>();
+        projectRepository.findById(projectId)
+                .map(Project::getUserId)
+                .ifPresent(userIds::add);
 
-        Optional<Project> projectOpt = projectRepository.findById(projectId);
-        if (projectOpt.isPresent()) {
-            Project project = projectOpt.get();
-            if (project.getUserId() != null) {
-                userIds.add(project.getUserId());
-            }
-        }
-
-        List<SharedProject> shares = sharedProjectRepository.findByProjectId(projectId);
-        for (SharedProject share : shares) {
-            userIds.add(share.getSharedWithUserId());
-        }
+        sharedProjectRepository.findByProjectId(projectId)
+                .forEach(share -> userIds.add(share.getSharedWithUserId()));
 
         return new ArrayList<>(userIds);
     }
 
-
-    public boolean hasAccessToProject(String projectId, String userId) {
-        Project project = projectRepository.findById(projectId).orElse(null);
-        if (project == null) return false;
-
-        if (project.getUserId() != null && project.getUserId().equals(userId)) {
-            return true;
-        }
-
-        return sharedProjectRepository.existsByProjectIdAndSharedWithUserId(projectId, userId);
-    }
-
-    private void notifyProjectParticipants(String projectId, String type, String entityType, Object data, String senderId) {
-        List<String> participantIds = findUsersWithAccessToProject(projectId);
-
-        String entityId;
-        if (data instanceof String) {
-            entityId = (String) data;
-        } else if (data instanceof Project) {
-            entityId = ((Project) data).getId();
-        } else if (data instanceof Material) {
-            entityId = ((Material) data).getId();
-        } else if (data instanceof WorkItem) {
-            entityId = ((WorkItem) data).getId();
-        } else if (data instanceof Contact) {
-            entityId = ((Contact) data).getId();
-        } else if (data instanceof ObjectModel) {
-            entityId = ((ObjectModel) data).getId();
-        } else {
-            entityId = null;
-        }
+    private void notifyProjectParticipants(String projectId, String type, String entityType,
+                                           Object data, String senderId) {
+        String entityId = resolveEntityId(data);
 
         SyncMessage message = new SyncMessage(
-                type, entityType, entityId,
-                data, senderId, new Date(), null
-        );
+                type, entityType, entityId, data, senderId, new Date(), null);
 
-        for (String userId : participantIds) {
+        for (String userId : findUsersWithAccessToProject(projectId)) {
             if (!userId.equals(senderId)) {
                 webSocketService.sendToUser(userId, message);
             }
         }
     }
 
+    private String resolveEntityId(Object data) {
+        if (data == null) return null;
+        if (data instanceof String s) return s;
+        if (data instanceof Project p) return p.getId();
+        if (data instanceof Material m) return m.getId();
+        if (data instanceof WorkItem w) return w.getId();
+        if (data instanceof Contact c) return c.getId();
+        if (data instanceof ObjectModel o) return o.getId();
+        return null;
+    }
 
     private void updateProjectTotal(String projectId) {
-        List<Material> materials = materialRepository.findByProjectId(projectId);
-        List<WorkItem> workItems = workItemRepository.findByProjectId(projectId);
+        Double materialCost = materialRepository.sumCostByProject(projectId);
+        Double workCost = workItemRepository.sumCostByProject(projectId);
 
-        double totalMaterialCost = materials.stream()
-                .mapToDouble(m -> m.getQuantity() * m.getUnitPrice())
-                .sum();
+        double total = (materialCost != null ? materialCost : 0.0)
+                + (workCost != null ? workCost : 0.0);
 
-        double totalWorkCost = workItems.stream()
-                .mapToDouble(w -> w.getLaborHours() * w.getHourlyRate() + w.getMaterialCost())
-                .sum();
-
-        double totalBudget = totalMaterialCost + totalWorkCost;
-
-        Optional<Project> projectOpt = projectRepository.findById(projectId);
-        if (projectOpt.isPresent()) {
-            Project project = projectOpt.get();
-            project.setTotalBudget(totalBudget);
-            projectRepository.save(project);
-        }
-    }
-
-    public List<SharedProject> getPendingSharesForUser(String userId) {
-        return sharedProjectRepository.findBySharedWithUserIdAndStatus(userId, ShareStatus.PENDING);
-    }
-
-    public List<Project> getPendingProjectsForUser(String userId) {
-        List<String> pendingProjectIds = sharedProjectRepository.findSharedProjectIdsByUserAndStatus(userId, ShareStatus.PENDING);
-        if (pendingProjectIds.isEmpty()) return new ArrayList<>();
-        return projectRepository.findAllById(pendingProjectIds);
-    }
-
-    @Transactional
-    public void acceptShare(String projectId, String userId) {
-        Optional<SharedProject> shareOpt = sharedProjectRepository.findByProjectIdAndSharedWithUserId(projectId, userId);
-        if (shareOpt.isPresent()) {
-            SharedProject share = shareOpt.get();
-            share.setStatus(ShareStatus.ACCEPTED);
-            share.setRespondedAt(new Date());
-            sharedProjectRepository.save(share);
-
-            SyncMessage message = new SyncMessage(
-                    "SHARE_ACCEPTED", "PROJECT", projectId, null,
-                    userId, new Date(), null
-            );
-            webSocketService.sendToUser(share.getSharedByUserId(), message);
-        }
-    }
-
-    @Transactional
-    public void declineShare(String projectId, String userId) {
-        Optional<SharedProject> shareOpt = sharedProjectRepository.findByProjectIdAndSharedWithUserId(projectId, userId);
-        if (shareOpt.isPresent()) {
-            SharedProject share = shareOpt.get();
-            share.setStatus(ShareStatus.DECLINED);
-            share.setRespondedAt(new Date());
-            sharedProjectRepository.save(share);
-
-            SyncMessage message = new SyncMessage(
-                    "SHARE_DECLINED", "PROJECT", projectId, null,
-                    userId, new Date(), null
-            );
-            webSocketService.sendToUser(share.getSharedByUserId(), message);
-        }
-    }
-
-    @PreDestroy
-    public void shutdown() {
-        System.out.println("=== SYNC SERVICE SHUTDOWN ===");
-        System.out.println("Cleaning up resources...");
-    }
-
-    @Transactional
-    public Project saveProject(Project project, String userId) {
-        Optional<Project> existing = projectRepository.findById(project.getId());
-
-        if (existing.isPresent()) {
-            Project oldProject = existing.get();
-            project.setUserId(oldProject.getUserId());
-            project.setOwnerId(oldProject.getOwnerId());
-            project.setCreatedAt(oldProject.getCreatedAt());
-            project.setCreatedBy(oldProject.getCreatedBy());
-            project.setUpdatedAt(new Date());
-            project.setLastModifiedBy(userId);
-            project.setVersion(oldProject.getVersion());
-
-            Project saved = projectRepository.save(project);
-            notifyProjectParticipants(saved.getId(), "UPDATE", "PROJECT", saved, userId);
-            return saved;
-        } else {
-            return createProject(project, userId);
-        }
+        projectRepository.updateTotalBudget(projectId, total);
     }
 }

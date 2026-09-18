@@ -1,14 +1,14 @@
 package com.example.myapplication.di
 
 import android.content.Context
-import com.example.myapplication.data.database.*
-import com.example.myapplication.data.models.ObjectModel
-import com.example.myapplication.data.repository.ContactRepository
-import com.example.myapplication.data.repository.ObjectRepository
-import com.example.myapplication.data.repository.ProjectRepository
-import com.example.myapplication.network.ApiService
-import com.example.myapplication.services.SyncManager
-import com.example.myapplication.utils.UserPreferences
+import com.example.myapplication.data.database.AppDatabase
+import com.example.myapplication.data.database.ContactDao
+import com.example.myapplication.data.database.ContactMethodDao
+import com.example.myapplication.data.database.MaterialDao
+import com.example.myapplication.data.database.ObjectDao
+import com.example.myapplication.data.database.ProjectDao
+import com.example.myapplication.data.database.SyncOperationDao
+import com.example.myapplication.data.database.WorkItemDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -18,18 +18,13 @@ import javax.inject.Singleton
 
 @Module
 @InstallIn(SingletonComponent::class)
-object AppModule {
+object DatabaseModule {
 
     @Provides
     @Singleton
-    fun provideApplicationContext(@ApplicationContext context: Context): Context {
-        return context
-    }
-
-    @Provides
-    @Singleton
-    fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase =
-        AppDatabase.getInstance(context)
+    fun provideAppDatabase(
+        @ApplicationContext context: Context
+    ): AppDatabase = AppDatabase.getInstance(context)
 
     @Provides
     @Singleton
@@ -51,69 +46,11 @@ object AppModule {
     @Singleton
     fun provideContactMethodDao(db: AppDatabase): ContactMethodDao = db.contactMethodDao()
 
-//    @Provides
-//    @Singleton
-//    fun provideTransactionDao(db: AppDatabase): TransactionDao = db.transactionDao()
-
     @Provides
     @Singleton
     fun provideObjectDao(db: AppDatabase): ObjectDao = db.objectDao()
 
-//    @Provides
-//    @Singleton
-//    fun provideObjectProjectDao(db: AppDatabase): ObjectProjectDao = db.objectProjectDao()
-
-    @Provides
-    @Singleton
-    fun provideProjectRepository(
-        projectDao: ProjectDao,
-        materialDao: MaterialDao,
-        workItemDao: WorkItemDao,
-        contactDao: ContactDao,
-        contactMethodDao: ContactMethodDao,
-        apiService: ApiService
-//        transactionDao: TransactionDao
-    ): ProjectRepository = ProjectRepository(
-        projectDao,
-        materialDao,
-        workItemDao,
-        contactDao,
-        contactMethodDao,
-        apiService
-//        transactionDao
-    )
-
     @Provides
     @Singleton
     fun provideSyncOperationDao(db: AppDatabase): SyncOperationDao = db.syncOperationDao()
-
-    @Provides
-    @Singleton
-    fun provideContactRepository(
-        contactDao: ContactDao,
-        contactMethodDao: ContactMethodDao,
-        apiService: ApiService,
-        syncManager: SyncManager,
-        userPreferences: UserPreferences
-    ): ContactRepository = ContactRepository(
-        contactDao,
-        contactMethodDao,
-        apiService,
-        syncManager,
-        userPreferences
-    )
-
-    @Provides
-    @Singleton
-    fun provideObjectRepository(
-        objectDao: ObjectDao,
-//        objectProjectDao: ObjectProjectDao,
-        projectDao: ProjectDao,
-        userPreferences: UserPreferences
-    ): ObjectRepository = ObjectRepository(
-        objectDao,
-//        objectProjectDao,
-        projectDao,
-        userPreferences
-    )
 }

@@ -5,87 +5,83 @@ import com.example.estimateserver.model.UserSession;
 import com.example.estimateserver.repository.UserSessionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
+
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 public class WebSocketService {
 
+    private static final Logger log = LoggerFactory.getLogger(WebSocketService.class);
+
+    private static final int MAX_OFFLINE_MESSAGES_PER_USER = 50;
+    private static final long STARTUP_CLOSE_DELAY_MS = 3_000L;
+    private static final long STARTUP_FINALIZE_DELAY_MS = 5_000L;
+    private static final long UNRESPONSIVE_CLOSE_DELAY_MS = 5_000L;
+
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, String> sessionToUser = new ConcurrentHashMap<>();
+
     private final Map<String, List<SyncMessage>> offlineMessages = new ConcurrentHashMap<>();
 
     private final Map<String, ReentrantLock> userLocks = new ConcurrentHashMap<>();
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
     private final UserSessionRepository sessionRepository;
 
     private final AtomicBoolean serverJustStarted = new AtomicBoolean(true);
-
     private volatile boolean acceptingNewConnections = false;
 
-    private final Set<String> forceLogoutSentOnStartup = ConcurrentHashMap.newKeySet();
+    private final ScheduledExecutorService scheduler =
+            Executors.newScheduledThreadPool(2, r -> {
+                Thread t = new Thread(r, "ws-scheduler");
+                t.setDaemon(true);
+                return t;
+            });
 
-    private final Set<String> pendingSessionClosure = ConcurrentHashMap.newKeySet();
-
-    public WebSocketService(UserSessionRepository sessionRepository) {
+    public WebSocketService(UserSessionRepository sessionRepository,
+                            ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
+        this.objectMapper = objectMapper;
     }
 
-    /**
-     * ✅ ПОТОКОБЕЗОПАСНОЕ добавление сессии с использованием блокировки на userId
-     */
-    public void addSession(String userId, WebSocketSession session) {
-        System.out.println("🔵 ADD SESSION for user: " + userId + ", sessionId: " + session.getId());
+    private static String offlineKey(String userId, String deviceId) {
+        return userId + ":" + deviceId;
+    }
 
+    public void addSession(String userId, WebSocketSession session) {
         if (userId == null || session == null) {
-            System.err.println("Cannot add session: userId or session is null");
+            log.warn("Cannot add session: userId or session is null");
             return;
         }
 
         if (serverJustStarted.get() && !acceptingNewConnections) {
-            System.out.println("⏸️ Server still in startup phase, rejecting connection for user: " + userId);
-            try {
-                sendForceLogoutToSession(userId, session);
-                session.close(CloseStatus.POLICY_VIOLATION);
-            } catch (IOException e) {
-                System.err.println("Error rejecting connection: " + e.getMessage());
-            }
+            log.info("Rejecting connection during startup: user={}", userId);
+            rejectConnection(userId, session);
             return;
         }
 
         ReentrantLock lock = userLocks.computeIfAbsent(userId, k -> new ReentrantLock());
-
         lock.lock();
         try {
-            WebSocketSession existingSession = sessions.get(userId);
-
-            if (existingSession != null && existingSession.isOpen()) {
-                System.out.println("⚠️ Replacing existing session for user: " + userId);
-                System.out.println("   Old session ID: " + existingSession.getId());
-                System.out.println("   New session ID: " + session.getId());
-
-                sendForceLogoutToSession(userId, existingSession);
-
-                try {
-                    existingSession.close(CloseStatus.POLICY_VIOLATION);
-                } catch (IOException e) {
-                    System.err.println("Error closing old session: " + e.getMessage());
-                }
-
+            WebSocketSession existing = sessions.get(userId);
+            if (existing != null && existing.isOpen()) {
+                log.info("Replacing existing session for user={} (old={}, new={})",
+                        userId, existing.getId(), session.getId());
+                sendForceLogoutToSession(userId, existing);
+                closeQuietly(existing, CloseStatus.POLICY_VIOLATION);
                 sessions.remove(userId);
-                sessionToUser.remove(existingSession.getId());
+                sessionToUser.remove(existing.getId());
             }
 
             sessions.put(userId, session);
@@ -94,258 +90,363 @@ public class WebSocketService {
             String deviceId = getDeviceIdFromSession(session);
             saveSessionToDatabase(userId, session.getId(), deviceId);
 
-            List<SyncMessage> pendingMessages = offlineMessages.remove(userId);
-            if (pendingMessages != null && !pendingMessages.isEmpty()) {
-                System.out.println("📬 Sending " + pendingMessages.size() + " pending messages to user " + userId);
-                for (SyncMessage message : pendingMessages) {
-                    sendToUser(userId, message);
+            List<SyncMessage> pending = offlineMessages.remove(offlineKey(userId, deviceId));
+            if (pending != null && !pending.isEmpty()) {
+                log.debug("Sending {} pending messages to user={} device={}",
+                        pending.size(), userId, deviceId);
+                for (SyncMessage msg : pending) {
+                    try {
+                        String json = objectMapper.writeValueAsString(msg);
+                        synchronized (session) {
+                            session.sendMessage(new TextMessage(json));
+                        }
+                    } catch (IOException e) {
+                        log.warn("Failed to send pending message to user={}: {}",
+                                userId, e.getMessage());
+                    }
                 }
             }
 
-            System.out.println("✅ User " + userId + " connected. Total sessions: " + sessions.size());
-
+            log.info("User {} connected (total sessions: {})", userId, sessions.size());
         } finally {
             lock.unlock();
         }
     }
 
-    /**
-     * ✅ ПОТОКОБЕЗОПАСНОЕ удаление сессии
-     */
     public void removeSession(String userId, boolean isServerShutdown) {
-        System.out.println("🔴 REMOVE SESSION for user: " + userId + ", isServerShutdown: " + isServerShutdown);
+        if (userId == null) return;
 
         ReentrantLock lock = userLocks.get(userId);
         if (lock != null) {
             lock.lock();
             try {
-                WebSocketSession session = sessions.remove(userId);
-                if (session != null) {
-                    sessionToUser.remove(session.getId());
-                    System.out.println("🗑️ Removed session for user: " + userId);
-                }
-
-                if (!isServerShutdown) {
-                    sessionRepository.deactivateUserSession(userId);
-                    System.out.println("💾 Deactivated session in database for user: " + userId);
-                }
+                doRemoveSession(userId, isServerShutdown);
             } finally {
                 lock.unlock();
             }
         } else {
-            WebSocketSession session = sessions.remove(userId);
-            if (session != null) {
-                sessionToUser.remove(session.getId());
-            }
-            if (!isServerShutdown) {
-                sessionRepository.deactivateUserSession(userId);
-            }
+            doRemoveSession(userId, isServerShutdown);
         }
 
-        if (!sessions.containsKey(userId)) {
-            userLocks.remove(userId);
-        }
+        userLocks.computeIfPresent(userId,
+                (k, l) -> (!sessions.containsKey(k) && !l.isLocked()) ? null : l);
     }
-
 
     public void removeSession(String userId) {
         removeSession(userId, false);
     }
 
-    /**
-     * ✅ ПОТОКОБЕЗОПАСНАЯ отправка сообщения пользователю
-     */
-    public void sendToUser(String userId, SyncMessage message) {
+    private void doRemoveSession(String userId, boolean isServerShutdown) {
+        WebSocketSession session = sessions.remove(userId);
+        if (session != null) {
+            sessionToUser.remove(session.getId());
+            log.debug("Removed session for user={}", userId);
+        }
+
+        if (!isServerShutdown) {
+            safeDeactivateSession(userId);
+        }
+    }
+
+    public void sendToUser(String userId, String deviceId, SyncMessage message) {
+        if (message == null || userId == null) return;
+
         if (serverJustStarted.get() && !"FORCE_LOGOUT".equals(message.getType())) {
-            System.out.println("📦 Server starting, queueing message for user " + userId);
-            saveOfflineMessage(userId, message);
+            saveOfflineMessage(userId, deviceId, message);
             return;
         }
 
         WebSocketSession session = sessions.get(userId);
+        if (session == null || !session.isOpen()) {
+            saveOfflineMessage(userId, deviceId, message);
+            return;
+        }
 
-        if (session != null && session.isOpen()) {
-            try {
-                String json = objectMapper.writeValueAsString(message);
-                synchronized (session) {
-                    session.sendMessage(new TextMessage(json));
-                }
-                System.out.println("📤 Sent to user " + userId + ": " + message.getType());
-            } catch (IOException e) {
-                System.err.println("Error sending to user " + userId + ": " + e.getMessage());
-                saveOfflineMessage(userId, message);
+        try {
+            String json = objectMapper.writeValueAsString(message);
+            synchronized (session) {
+                session.sendMessage(new TextMessage(json));
             }
-        } else {
-            saveOfflineMessage(userId, message);
+        } catch (IOException e) {
+            log.warn("Send failed to user={}: {}", userId, e.getMessage());
+            saveOfflineMessage(userId, deviceId, message);
         }
     }
 
-    /**
-     * ✅ Проверка наличия сессии (read-only, без блокировки)
-     */
+    @Deprecated
+    public void sendToUser(String userId, SyncMessage message) {
+        if (message == null || userId == null) return;
+
+        WebSocketSession session = sessions.get(userId);
+        if (session == null || !session.isOpen()) {
+            log.warn("sendToUser (no deviceId): user={} offline, message dropped", userId);
+            return;
+        }
+
+        try {
+            String json = objectMapper.writeValueAsString(message);
+            synchronized (session) {
+                session.sendMessage(new TextMessage(json));
+            }
+        } catch (IOException e) {
+            log.warn("Send failed to user={}: {}", userId, e.getMessage());
+        }
+    }
+
     public boolean hasSession(String userId) {
         WebSocketSession session = sessions.get(userId);
         return session != null && session.isOpen();
     }
 
-    /**
-     * ✅ Получение сессии (read-only)
-     */
+    public boolean hasAnySession(String userId) {
+        return sessions.containsKey(userId);
+    }
+
     public WebSocketSession getSession(String userId) {
         return sessions.get(userId);
     }
 
-    /**
-     * ✅ Получение всех онлайн пользователей (копия для безопасности)
-     */
     public Set<String> getOnlineUsers() {
         return new HashSet<>(sessions.keySet());
     }
 
-    /**
-     * ✅ Потокобезопасная установка флага запуска сервера
-     */
-    public void setServerJustStarted(boolean started) {
-        System.out.println("🔄 Setting serverJustStarted to: " + started);
-        this.serverJustStarted.set(started);
+    public int getActiveSessionsCount() {
+        return sessions.size();
+    }
 
-        if (!started) {
-            forceLogoutSentOnStartup.clear();
-            pendingSessionClosure.clear();
-
-            acceptingNewConnections = true;
-        } else {
-            acceptingNewConnections = false;
+    public String getDeviceIdForUser(String userId) {
+        try {
+            return sessionRepository.findByUserId(userId)
+                    .map(UserSession::getDeviceId)
+                    .orElse(null);
+        } catch (Exception e) {
+            log.warn("Failed to get deviceId for user={}: {}", userId, e.getMessage());
+            return null;
         }
+    }
+
+    public void setServerJustStarted(boolean started) {
+        log.info("serverJustStarted = {}", started);
+        serverJustStarted.set(started);
+        acceptingNewConnections = !started;
     }
 
     public boolean isServerJustStarted() {
         return serverJustStarted.get();
     }
 
-
-    public void forceLogoutAllActiveSessionsImmediately() {
-        System.out.println("⚠️ FORCE LOGOUT ALL ACTIVE SESSIONS");
-
+    public void forceLogoutAllActiveSessions() {
+        log.warn("FORCE LOGOUT ALL ACTIVE SESSIONS");
         acceptingNewConnections = false;
 
-        Set<String> onlineUsers = new HashSet<>(sessions.keySet());
-
-        int sentCount = 0;
-
-        for (String userId : onlineUsers) {
+        int sent = 0;
+        for (String userId : new HashSet<>(sessions.keySet())) {
             ReentrantLock lock = userLocks.get(userId);
-            if (lock != null) {
-                lock.lock();
-                try {
-                    WebSocketSession session = sessions.get(userId);
-                    if (session != null && session.isOpen()) {
-                        if (sendForceLogoutToSession(userId, session)) {
-                            sentCount++;
-                            forceLogoutSentOnStartup.add(userId);
-                        }
-                    }
-                } finally {
-                    lock.unlock();
+            if (lock == null) continue;
+
+            lock.lock();
+            try {
+                WebSocketSession session = sessions.get(userId);
+                if (session != null && session.isOpen() && sendForceLogoutToSession(userId, session)) {
+                    sent++;
                 }
+            } finally {
+                lock.unlock();
+            }
+        }
+        log.info("Sent FORCE_LOGOUT to {} users", sent);
+
+        scheduler.schedule(this::closeAllSessionsAfterStartup,
+                STARTUP_CLOSE_DELAY_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void closeAllSessionsAfterStartup() {
+        log.info("Closing all sessions after force logout");
+
+        for (String userId : new HashSet<>(sessions.keySet())) {
+            ReentrantLock lock = userLocks.get(userId);
+            if (lock == null) continue;
+
+            lock.lock();
+            try {
+                WebSocketSession session = sessions.get(userId);
+                if (session != null && session.isOpen()) {
+                    closeQuietly(session, CloseStatus.POLICY_VIOLATION);
+                }
+            } finally {
+                lock.unlock();
             }
         }
 
-        System.out.println("✅ Sent FORCE_LOGOUT to " + sentCount + " users");
+        sessions.clear();
+        sessionToUser.clear();
+        acceptingNewConnections = true;
 
-        scheduleCloseSessionsAfterDelay(3000);
+        scheduler.schedule(() -> {
+            serverJustStarted.set(false);
+            log.info("Server startup phase completed");
+        }, STARTUP_FINALIZE_DELAY_MS, TimeUnit.MILLISECONDS);
     }
 
-    /**
-     * ✅ Периодическая очистка старых блокировок (чтобы не было утечек)
-     */
-    @Scheduled(fixedDelay = 60000)
+    @PreDestroy
+    public void gracefulShutdown() {
+        log.info("WebSocket graceful shutdown");
+        scheduler.shutdownNow();
+
+        for (String userId : new HashSet<>(sessions.keySet())) {
+            ReentrantLock lock = userLocks.get(userId);
+            if (lock == null) continue;
+
+            lock.lock();
+            try {
+                WebSocketSession session = sessions.get(userId);
+                if (session != null && session.isOpen()) {
+                    closeQuietly(session, CloseStatus.NORMAL);
+                }
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        sessions.clear();
+        sessionToUser.clear();
+        offlineMessages.clear();
+        userLocks.clear();
+    }
+
+    @Scheduled(fixedDelay = 60_000)
     public void cleanupStaleLocks() {
-        for (Map.Entry<String, ReentrantLock> entry : userLocks.entrySet()) {
-            String userId = entry.getKey();
-            ReentrantLock lock = entry.getValue();
-
-            if (!sessions.containsKey(userId) && !lock.isLocked()) {
-                userLocks.remove(userId);
-                System.out.println("🧹 Cleaned up stale lock for user: " + userId);
-            }
-        }
+        userLocks.entrySet().removeIf(entry ->
+                !sessions.containsKey(entry.getKey()) && !entry.getValue().isLocked());
     }
 
-    /**
-     * ✅ Потокобезопасная отправка PING всем клиентам
-     */
-    @Scheduled(fixedDelay = 30000)
+    @Scheduled(fixedDelay = 30_000)
     public void sendPingToAllClients() {
         if (serverJustStarted.get()) {
-            System.out.println("⏸️ Skipping ping during startup phase");
+            log.debug("Skipping ping during startup phase");
             return;
         }
 
-        Set<String> onlineUsers = new HashSet<>(sessions.keySet());
-
-        for (String userId : onlineUsers) {
+        for (String userId : new HashSet<>(sessions.keySet())) {
             WebSocketSession session = sessions.get(userId);
-            if (session != null && session.isOpen()) {
-                try {
+            if (session == null || !session.isOpen()) continue;
+
+            try {
+                synchronized (session) {
                     session.sendMessage(new TextMessage("ping"));
-                    System.out.println("🏓 Sent ping to user: " + userId);
-                } catch (IOException e) {
-                    System.err.println("Failed to send ping to user: " + userId);
-                    scheduleSessionClose(userId, session);
                 }
+            } catch (IOException e) {
+                log.warn("Ping failed to user={}", userId);
+                scheduleSessionClose(userId, session);
             }
         }
     }
 
+    public void sendForceLogout(String userId) {
+        ReentrantLock lock = userLocks.get(userId);
+        if (lock != null) {
+            lock.lock();
+            try {
+                WebSocketSession session = sessions.get(userId);
+                if (session != null && session.isOpen()) {
+                    sendForceLogoutToSession(userId, session);
+                    closeQuietly(session, CloseStatus.POLICY_VIOLATION);
+                }
+            } finally {
+                lock.unlock();
+            }
+        }
+        removeSession(userId, false);
+    }
+
+    public void queueForceLogoutForOfflineUser(String userId, String deviceId) {
+        if (deviceId == null || deviceId.isEmpty()) {
+            log.warn("queueForceLogoutForOfflineUser: no deviceId, user={}", userId);
+            return;
+        }
+        saveOfflineMessage(userId, deviceId, new SyncMessage(
+                "FORCE_LOGOUT", "SESSION", null, null,
+                userId, new Date(), null));
+    }
+
+    public void updateSessionLastPong(String userId) {
+        try {
+            sessionRepository.findByUserId(userId).ifPresent(session -> {
+                session.setLastPongAt(new Date());
+                sessionRepository.save(session);
+            });
+        } catch (Exception e) {
+            log.warn("Error updating last pong for user={}: {}", userId, e.getMessage());
+        }
+    }
+
+    public void dumpSessionsState() {
+        log.info("Sessions: total={}, serverJustStarted={}, accepting={}",
+                sessions.size(), serverJustStarted.get(), acceptingNewConnections);
+    }
+
+    private void rejectConnection(String userId, WebSocketSession session) {
+        try {
+            sendForceLogoutToSession(userId, session);
+        } catch (Exception ignored) {
+        } finally {
+            closeQuietly(session, CloseStatus.POLICY_VIOLATION);
+        }
+    }
 
     private boolean sendForceLogoutToSession(String userId, WebSocketSession session) {
         try {
             SyncMessage message = new SyncMessage(
                     "FORCE_LOGOUT", "SESSION", null, null,
-                    userId, new Date(), null
-            );
+                    userId, new Date(), null);
             String json = objectMapper.writeValueAsString(message);
-
             synchronized (session) {
                 session.sendMessage(new TextMessage(json));
             }
-
-            System.out.println("📤 Sent FORCE_LOGOUT to user: " + userId);
             return true;
-
         } catch (IOException e) {
-            System.err.println("Failed to send FORCE_LOGOUT: " + e.getMessage());
+            log.warn("Failed to send FORCE_LOGOUT to user={}: {}", userId, e.getMessage());
             return false;
         }
     }
 
-    private void saveOfflineMessage(String userId, SyncMessage message) {
-        offlineMessages.computeIfAbsent(userId, k -> new CopyOnWriteArrayList<>()).add(message);
-
-        List<SyncMessage> userMessages = offlineMessages.get(userId);
-        while (userMessages != null && userMessages.size() > 50) {
-            userMessages.remove(0);
+    private void saveOfflineMessage(String userId, String deviceId, SyncMessage message) {
+        if (deviceId == null || deviceId.isEmpty()) {
+            log.warn("saveOfflineMessage: no deviceId, message dropped for user={}", userId);
+            return;
+        }
+        String key = offlineKey(userId, deviceId);
+        List<SyncMessage> list = offlineMessages.computeIfAbsent(
+                key, k -> new CopyOnWriteArrayList<>());
+        list.add(message);
+        while (list.size() > MAX_OFFLINE_MESSAGES_PER_USER) {
+            list.remove(0);
         }
     }
 
     private void saveSessionToDatabase(String userId, String sessionId, String deviceId) {
         try {
-            Optional<UserSession> existing = sessionRepository.findByUserId(userId);
-            if (existing.isPresent()) {
-                UserSession session = existing.get();
-                session.setSessionId(sessionId);
-                session.setDeviceId(deviceId);
-                session.setActive(true);
-                session.setConnectedAt(new Date());
-                session.setLastPongAt(new Date());
-                sessionRepository.save(session);
-            } else {
-                UserSession userSession = new UserSession(userId, sessionId, deviceId);
-                sessionRepository.save(userSession);
-            }
+            sessionRepository.findByUserId(userId).ifPresentOrElse(
+                    existing -> {
+                        existing.setSessionId(sessionId);
+                        existing.setDeviceId(deviceId);
+                        existing.setActive(true);
+                        existing.setConnectedAt(new Date());
+                        existing.setLastPongAt(new Date());
+                        sessionRepository.save(existing);
+                    },
+                    () -> sessionRepository.save(new UserSession(userId, sessionId, deviceId))
+            );
         } catch (Exception e) {
-            System.err.println("Failed to save session to database: " + e.getMessage());
+            log.error("Failed to save session for user={}: {}", userId, e.getMessage());
+        }
+    }
+
+    private void safeDeactivateSession(String userId) {
+        try {
+            sessionRepository.deactivateUserSession(userId);
+        } catch (Exception e) {
+            log.warn("Failed to deactivate session for user={}: {}", userId, e.getMessage());
         }
     }
 
@@ -360,159 +461,30 @@ public class WebSocketService {
                 }
             }
         } catch (Exception e) {
-            System.err.println("Error extracting deviceId: " + e.getMessage());
+            log.warn("Error extracting deviceId: {}", e.getMessage());
         }
         return UUID.randomUUID().toString();
     }
 
     private void scheduleSessionClose(String userId, WebSocketSession session) {
-        Executors.newSingleThreadScheduledExecutor().schedule(() -> {
-            WebSocketSession currentSession = sessions.get(userId);
-            if (currentSession == session && session.isOpen()) {
-                try {
-                    session.close(CloseStatus.SERVER_ERROR);
-                    System.out.println("Closed unresponsive session for user: " + userId);
-                } catch (IOException e) {
-                    System.err.println("Error closing session: " + e.getMessage());
-                }
+        scheduler.schedule(() -> {
+            WebSocketSession current = sessions.get(userId);
+            if (current == session && session.isOpen()) {
+                closeQuietly(session, CloseStatus.SERVER_ERROR);
                 sessions.remove(userId);
                 sessionToUser.remove(session.getId());
+                log.info("Closed unresponsive session for user={}", userId);
             }
-        }, 5000, TimeUnit.MILLISECONDS);
+        }, UNRESPONSIVE_CLOSE_DELAY_MS, TimeUnit.MILLISECONDS);
     }
 
-    private void scheduleCloseSessionsAfterDelay(long delayMs) {
-        Executors.newSingleThreadScheduledExecutor().schedule(() -> {
-            System.out.println("🔒 Closing all sessions after force logout...");
-
-            Set<String> onlineUsers = new HashSet<>(sessions.keySet());
-
-            for (String userId : onlineUsers) {
-                ReentrantLock lock = userLocks.get(userId);
-                if (lock != null) {
-                    lock.lock();
-                    try {
-                        WebSocketSession session = sessions.get(userId);
-                        if (session != null && session.isOpen()) {
-                            pendingSessionClosure.add(userId);
-                            session.close(CloseStatus.POLICY_VIOLATION);
-                        }
-                    } catch (IOException e) {
-                        System.err.println("Error closing session: " + e.getMessage());
-                    } finally {
-                        pendingSessionClosure.remove(userId);
-                        lock.unlock();
-                    }
-                }
-            }
-
-            sessions.clear();
-            sessionToUser.clear();
-
-            acceptingNewConnections = true;
-
-            Executors.newSingleThreadScheduledExecutor().schedule(() -> {
-                serverJustStarted.set(false);
-                forceLogoutSentOnStartup.clear();
-                System.out.println("✅ Server startup phase completed");
-            }, 5000, TimeUnit.MILLISECONDS);
-
-        }, delayMs, TimeUnit.MILLISECONDS);
-    }
-
-    @PreDestroy
-    public void gracefulShutdown() {
-        System.out.println("=== SERVER SHUTTING DOWN ===");
-
-        Set<String> onlineUsers = new HashSet<>(sessions.keySet());
-
-        for (String userId : onlineUsers) {
-            ReentrantLock lock = userLocks.get(userId);
-            if (lock != null) {
-                lock.lock();
-                try {
-                    WebSocketSession session = sessions.get(userId);
-                    if (session != null && session.isOpen()) {
-                        session.close(CloseStatus.NORMAL);
-                    }
-                } catch (IOException e) {
-                    System.err.println("Error closing session: " + e.getMessage());
-                } finally {
-                    lock.unlock();
-                }
-            }
-        }
-
-        sessions.clear();
-        sessionToUser.clear();
-        offlineMessages.clear();
-        userLocks.clear();
-
-        System.out.println("All sessions closed, database sessions preserved");
-    }
-
-
-    public void updateSessionLastPong(String userId) {
+    private static void closeQuietly(WebSocketSession session, CloseStatus status) {
         try {
-            Optional<UserSession> sessionOpt = sessionRepository.findByUserId(userId);
-            if (sessionOpt.isPresent()) {
-                UserSession session = sessionOpt.get();
-                session.setLastPongAt(new Date());
-                sessionRepository.save(session);
+            if (session != null && session.isOpen()) {
+                session.close(status);
             }
-        } catch (Exception e) {
-            System.err.println("Error updating last pong: " + e.getMessage());
+        } catch (IOException e) {
+            log.debug("Close session failed: {}", e.getMessage());
         }
-    }
-
-
-
-    public void queueForceLogoutForOfflineUser(String userId) {
-        SyncMessage forceLogoutMessage = new SyncMessage(
-                "FORCE_LOGOUT", "SESSION", null, null,
-                userId, new Date(), null
-        );
-        saveOfflineMessage(userId, forceLogoutMessage);
-    }
-
-    public void sendForceLogout(String userId) {
-        ReentrantLock lock = userLocks.get(userId);
-        if (lock != null) {
-            lock.lock();
-            try {
-                WebSocketSession session = sessions.get(userId);
-                if (session != null && session.isOpen()) {
-                    sendForceLogoutToSession(userId, session);
-                    session.close(CloseStatus.POLICY_VIOLATION);
-                }
-            } catch (IOException e) {
-                System.err.println("Error closing session: " + e.getMessage());
-            } finally {
-                lock.unlock();
-            }
-        }
-        removeSession(userId, false);
-    }
-
-    public boolean hasAnySession(String userId) {
-        return sessions.containsKey(userId);
-    }
-
-    public void dumpSessionsState() {
-        System.out.println("========== SESSIONS STATE ==========");
-        System.out.println("Total sessions: " + sessions.size());
-        System.out.println("Server just started: " + serverJustStarted.get());
-        System.out.println("Accepting connections: " + acceptingNewConnections);
-        for (String userId : sessions.keySet()) {
-            WebSocketSession session = sessions.get(userId);
-            System.out.println("   User: " + userId + ", Session: " +
-                    (session != null ? session.getId() : "null") + ", Open: " +
-                    (session != null && session.isOpen()));
-        }
-        System.out.println("====================================");
-    }
-
-    public int getActiveSessionsCount() {
-        return sessions.size();
     }
 }

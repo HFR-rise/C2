@@ -1,53 +1,102 @@
 package com.example.myapplication.ui.theme
 
-import androidx.compose.material.icons.filled.LocationOn
+import android.widget.Toast
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SearchOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.example.myapplication.data.models.Contact
 import com.example.myapplication.data.models.ContactMethod
 import com.example.myapplication.data.models.ObjectModel
 import com.example.myapplication.data.models.Project
+import com.example.myapplication.ui.components.AppSearchBar
+import com.example.myapplication.ui.components.ConfirmationDialog
+import com.example.myapplication.ui.components.ContactSelectorConfig
+import com.example.myapplication.ui.components.ContactSelectorDialog
+import com.example.myapplication.ui.components.CreateObjectDialog
+import com.example.myapplication.ui.components.CreateTypeDialog
+import com.example.myapplication.ui.components.EditObjectDialog
+import com.example.myapplication.ui.components.EmptyState
+import com.example.myapplication.ui.components.FilterOption
+import com.example.myapplication.ui.components.MoveProjectCardWithInfo
+import com.example.myapplication.ui.components.NoPhoneErrorDialog
+import com.example.myapplication.ui.components.ObjectCard
+import com.example.myapplication.ui.components.ProjectCard
+import com.example.myapplication.ui.components.SectionHeader
+import com.example.myapplication.ui.components.SelectableObjectCard
+import com.example.myapplication.ui.components.ShareConfirmationDialog
+import com.example.myapplication.ui.components.UserNotFoundErrorDialog
+import com.example.myapplication.viewmodels.ContactsViewModel
 import com.example.myapplication.viewmodels.ObjectFilterType
 import com.example.myapplication.viewmodels.ObjectsViewModel
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
-import android.util.Log
-import java.util.Locale
-import androidx.compose.foundation.shape.RoundedCornerShape
-
-// Accompanist SwipeRefresh импорты
-import com.google.accompanist.swiperefresh.SwipeRefresh
-import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
-
-// Импорты для расшаривания
+import com.example.myapplication.viewmodels.ShareErrorType
 import com.example.myapplication.viewmodels.ShareViewModel
 import com.example.myapplication.viewmodels.SharingState
-import com.example.myapplication.viewmodels.ContactsViewModel
-import com.example.myapplication.ui.components.ShareConfirmationDialog
-import com.example.myapplication.ui.components.NoPhoneErrorDialog
-import com.example.myapplication.ui.components.UserNotFoundErrorDialog
-import com.example.myapplication.ui.components.ShareContactSelectorDialog
-import androidx.compose.runtime.derivedStateOf
-import kotlinx.coroutines.launch
-import androidx.compose.ui.platform.LocalContext
-import android.widget.Toast
+import com.google.accompanist.swiperefresh.SwipeRefresh
+import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,129 +110,80 @@ fun ObjectsScreen(
     navigationStack: List<Pair<String, String>> = emptyList(),
     viewModel: ObjectsViewModel = hiltViewModel()
 ) {
-    val filteredObjects by viewModel.filteredObjects.collectAsState()
-    val projectsInObject by viewModel.projectsInObject.collectAsState()
-    val rootLevelProjects by viewModel.rootLevelProjects.collectAsState()
-    val showRootProjects by viewModel.showRootProjects.collectAsState()
-    val showCreateDialog by viewModel.showCreateDialog.collectAsState()
-    val showCreateTypeDialog by viewModel.showCreateTypeDialog.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val currentFilter by viewModel.currentFilter.collectAsState()
-    val isRefreshing by viewModel.isRefreshing.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val currentObjectName by viewModel.currentObjectName.collectAsState()
-
-    val showDeleteConfirmation by viewModel.showDeleteConfirmation.collectAsState()
-    val objectToDelete by viewModel.objectToDelete.collectAsState()
-    val showInfoDialog by viewModel.showInfoDialog.collectAsState()
-    val infoObject by viewModel.infoObject.collectAsState()
-    val showEditDialog by viewModel.showEditDialog.collectAsState()
-    val editingObject by viewModel.editingObject.collectAsState()
-    val showDeleteProjectConfirmation by viewModel.showDeleteProjectConfirmation.collectAsState()
-    val projectToDelete by viewModel.projectToDelete.collectAsState()
-
-    // ===== НОВЫЕ СОСТОЯНИЯ ДЛЯ РАСШАРИВАНИЯ =====
-    val shareViewModel: ShareViewModel = hiltViewModel()
-    val sharingState by shareViewModel.sharingState.collectAsState()
-    val shareErrorMessage by shareViewModel.errorMessage.collectAsState()
-    val contactsViewModel: ContactsViewModel = hiltViewModel()
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
+    val filteredObjects by viewModel.filteredObjects.collectAsStateWithLifecycle()
+    val projectsInObject by viewModel.projectsInObject.collectAsStateWithLifecycle()
+    val rootLevelProjects by viewModel.rootLevelProjects.collectAsStateWithLifecycle()
+    val showRootProjects by viewModel.showRootProjects.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val currentFilter by viewModel.currentFilter.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val currentObjectName by viewModel.currentObjectName.collectAsStateWithLifecycle()
 
     var isSearchActive by remember { mutableStateOf(false) }
     var showFilterMenu by remember { mutableStateOf(false) }
-
-    // Состояния для сворачивания секций
     var showObjectsSection by remember { mutableStateOf(true) }
 
-    // Состояния для расшаривания
-    var showShareContactSelector by remember { mutableStateOf(false) }
-    var selectedProjectForShare by remember { mutableStateOf<Project?>(null) }
-    var selectedContactForShare by remember { mutableStateOf<Contact?>(null) }
-    var showShareConfirmation by remember { mutableStateOf(false) }
-    var showNoPhoneError by remember { mutableStateOf(false) }
-    var showUserNotFoundError by remember { mutableStateOf(false) }
-    var contactMethodsForShare by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
-
-    // Состояние для SwipeRefresh
+    val context = LocalContext.current
     val swipeRefreshState = rememberSwipeRefreshState(isRefreshing)
 
-    // Обновляем parentId в ViewModel при изменении
+    val shareViewModel: ShareViewModel = hiltViewModel()
+    val contactsViewModel: ContactsViewModel = hiltViewModel()
+    val shareHolder = rememberShareHolder(shareViewModel, contactsViewModel)
+
     LaunchedEffect(parentObjectId) {
-        Log.d("ObjectsScreen", "parentObjectId changed to: $parentObjectId")
         viewModel.updateParentId(parentObjectId)
-        viewModel.refreshProjects()
     }
 
-    // Обновляем данные при возврате на экран
-    LaunchedEffect(Unit) {
-        viewModel.loadDataFromLocalOnly()
-    }
+    val sharingState by shareViewModel.sharingState.collectAsStateWithLifecycle()
 
-    // Загружаем методы для выбранного контакта
-    LaunchedEffect(selectedContactForShare) {
-        if (selectedContactForShare != null) {
-            contactsViewModel.getContactMethods(selectedContactForShare!!.id).collect { methods ->
-                contactMethodsForShare = methods
-            }
-        }
-    }
-
-    // Обработка результата расшаривания
     LaunchedEffect(sharingState) {
-        when (sharingState) {
+        when (val s = sharingState) {
             is SharingState.Success -> {
-                // Успешно поделились
-                showShareConfirmation = false
-                showShareContactSelector = false
-                selectedProjectForShare = null
-                selectedContactForShare = null
-
-                Toast.makeText(
-                    context,
-                    "Смета отправлена!",
-                    Toast.LENGTH_SHORT
-                ).show()
-
-                shareViewModel.resetState()
+                Toast.makeText(context, "Смета отправлена!", Toast.LENGTH_SHORT).show()
+                shareHolder.onSuccess()
+                shareHolder.onReset()
             }
             is SharingState.Error -> {
-                val error = (sharingState as SharingState.Error).message
-                when {
-                    error.contains("не найден") -> {
-                        showUserNotFoundError = true
-                    }
-                    error.contains("нет номера") -> {
-                        showNoPhoneError = true
-                    }
-                    else -> {
-                        Toast.makeText(
-                            context,
-                            error,
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
+                if (s.type == ShareErrorType.OTHER) {
+                    Toast.makeText(context, s.message ?: "Ошибка", Toast.LENGTH_SHORT).show()
                 }
-                showShareConfirmation = false
-                shareViewModel.resetState()
+                shareHolder.onError(s.type)
+                shareHolder.onReset()
             }
-            else -> {}
+            else -> Unit
         }
     }
 
     DisposableEffect(Unit) {
-        onDispose {
-            viewModel.clearSearch()
-        }
+        onDispose { viewModel.clearSearch() }
+    }
+
+    val callbacks = remember(navController, shareHolder) {
+        ObjectsContentCallbacks(
+            onToggleObjectsSection = { showObjectsSection = !showObjectsSection },
+            onToggleRootProjects = viewModel::toggleRootProjectsSection,
+            onObjectSelected = onObjectSelected,
+            onObjectOpen = onObjectOpen,
+            onShowInfo = viewModel::showInfoDialog,
+            onEditObject = viewModel::startEditing,
+            onDeleteObject = viewModel::showDeleteConfirmation,
+            onDeleteProject = viewModel::showDeleteProjectConfirmation,
+            onShareProject = shareHolder::onProjectSelected,
+            onNavigateToObject = { navController.navigate("objects/${it.id}") },
+            onViewProject = { navController.navigate("view_project/${it.id}") },
+            onEditProject = { navController.navigate("edit_project/${it.id}") },
+            onMoveProject = { project, fromObjectId ->
+                navController.navigate("move_project/${project.id}/${fromObjectId ?: "none"}")
+            }
+        )
     }
 
     Scaffold(
         floatingActionButton = {
             if (!selectionMode) {
                 FloatingActionButton(
-                    onClick = {
-                        viewModel.showCreateTypeDialog()
-                    },
+                    onClick = { viewModel.showCreateTypeDialog() },
                     containerColor = MaterialTheme.colorScheme.primary
                 ) {
                     Icon(Icons.Default.Add, contentDescription = "Создать")
@@ -191,115 +191,24 @@ fun ObjectsScreen(
             }
         },
         topBar = {
-            TopAppBar(
-                title = {
-                    if (isSearchActive) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            IconButton(onClick = { showFilterMenu = true }) {
-                                Icon(
-                                    when (currentFilter) {
-                                        ObjectFilterType.BY_NAME -> Icons.Default.Folder
-                                        ObjectFilterType.BY_DESCRIPTION -> Icons.Default.Description
-                                        ObjectFilterType.BY_ADDRESS -> Icons.Default.LocationOn
-                                    },
-                                    contentDescription = "Фильтр",
-                                    tint = Color.White
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(8.dp))
-
-                            TextField(
-                                value = searchQuery,
-                                onValueChange = { viewModel.updateSearchQuery(it) },
-                                modifier = Modifier.weight(1f),
-                                placeholder = {
-                                    Text(
-                                        when (currentFilter) {
-                                            ObjectFilterType.BY_NAME -> "Поиск по названию..."
-                                            ObjectFilterType.BY_DESCRIPTION -> "Поиск по описанию..."
-                                            ObjectFilterType.BY_ADDRESS -> "Поиск по адресу..."
-                                        }
-                                    )
-                                },
-                                singleLine = true,
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent,
-                                    focusedTextColor = Color.Black,
-                                    unfocusedTextColor = Color.Black
-                                )
-                            )
-
-                            IconButton(onClick = {
-                                isSearchActive = false
-                                viewModel.clearSearch()
-                            }) {
-                                Icon(Icons.Default.Close, contentDescription = "Закрыть", tint = Color.White)
-                            }
-                        }
-                    } else if (selectionMode) {
-                        val title = if (parentObjectId != null) {
-                            val currentObject = filteredObjects.find { it.id == parentObjectId }
-                            currentObject?.name ?: "Выберите объект для перемещения"
-                        } else {
-                            "Выберите объект для перемещения"
-                        }
-                        Text(
-                            title,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
-                        )
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = if (parentObjectId != null) currentObjectName ?: "Объекты" else "Объекты",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 20.sp
-                            )
-                        }
+            ObjectsTopBar(
+                isSearchActive = isSearchActive,
+                selectionMode = selectionMode,
+                parentObjectId = parentObjectId,
+                searchQuery = searchQuery,
+                currentFilter = currentFilter,
+                currentObjectName = currentObjectName,
+                onSearchToggle = { isSearchActive = it },
+                onSearchQueryChange = viewModel::updateSearchQuery,
+                onFilterClick = { showFilterMenu = true },
+                onBackClick = {
+                    when {
+                        navigationStack.isNotEmpty() -> onNavigateBack?.invoke()
+                        selectionMode -> onNavigateBack?.invoke()
+                        else -> navController.popBackStack()
                     }
                 },
-                navigationIcon = {
-                    if (selectionMode && parentObjectId != null) {
-                        IconButton(onClick = {
-                            viewModel.updateParentId(null)
-                            onNavigateBack?.invoke()
-                        }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Назад", tint = Color.White)
-                        }
-                    } else if (selectionMode) {
-                        IconButton(onClick = { navController.navigateUp() }) {
-                            Icon(Icons.Default.Close, contentDescription = "Закрыть", tint = Color.White)
-                        }
-                    } else if (parentObjectId != null && !isSearchActive) {
-                        IconButton(onClick = { navController.popBackStack() }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Назад", tint = Color.White)
-                        }
-                    }
-                },
-                actions = {
-                    if (!isSearchActive && !selectionMode) {
-                        IconButton(onClick = { isSearchActive = true }) {
-                            Icon(Icons.Default.Search, contentDescription = "Поиск", tint = Color.White)
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Black,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White,
-                    actionIconContentColor = Color.White
-                )
+                onCloseClick = { navController.navigateUp() }
             )
         }
     ) { paddingValues ->
@@ -310,1442 +219,678 @@ fun ObjectsScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            Column(
-                modifier = Modifier.fillMaxSize()
-            ) {
+            Column(modifier = Modifier.fillMaxSize()) {
                 GradientDivider()
 
                 if (isLoading && !isRefreshing) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator()
-                    }
+                    ) { CircularProgressIndicator() }
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        // СЕКЦИЯ 1: ОБЪЕКТЫ
-                        if (filteredObjects.isNotEmpty()) {
-                            item {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { showObjectsSection = !showObjectsSection }
-                                        .padding(vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "🏢 Объекты (${filteredObjects.size})",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 18.sp,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Icon(
-                                        if (showObjectsSection) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                        contentDescription = if (showObjectsSection) "Свернуть" else "Развернуть",
-                                        tint = Color.Gray
-                                    )
-                                }
-                            }
-
-                            if (showObjectsSection) {
-                                items(filteredObjects) { obj ->
-                                    if (selectionMode) {
-                                        SelectableObjectCard(
-                                            obj = obj,
-                                            onSelect = { onObjectSelected?.invoke(obj.id, obj.name) },
-                                            onOpen = {
-                                                viewModel.updateParentId(obj.id)
-                                                onObjectOpen?.invoke(obj.id, obj.name)
-                                                viewModel.refreshProjects()
-                                            },
-                                            onInfo = { viewModel.showInfoDialog(obj) }
-                                        )
-                                    } else {
-                                        ObjectCard(
-                                            obj = obj,
-                                            onClick = { navController.navigate("objects/${obj.id}") },
-                                            onEdit = { viewModel.startEditing(obj) },
-                                            onDelete = { viewModel.showDeleteConfirmation(obj) },
-                                            onInfo = { viewModel.showInfoDialog(obj) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // РАЗДЕЛИТЕЛЬ
-                        if (filteredObjects.isNotEmpty() && (projectsInObject.isNotEmpty() || rootLevelProjects.isNotEmpty())) {
-                            item {
-                                Divider(
-                                    modifier = Modifier.padding(vertical = 8.dp),
-                                    color = Color.Gray.copy(alpha = 0.3f),
-                                    thickness = 1.dp
-                                )
-                            }
-                        }
-
-                        // СЕКЦИЯ 2: СМЕТЫ ВНУТРИ ОБЪЕКТА
-                        if (parentObjectId != null && projectsInObject.isNotEmpty()) {
-                            item {
-                                Text(
-                                    text = "📋 Сметы (${projectsInObject.size})",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 18.sp,
-                                    color = Color(0xFFFF9800),
-                                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
-                                )
-                            }
-
-                            items(projectsInObject) { project ->
-                                if (selectionMode) {
-                                    MoveProjectCardWithInfo(
-                                        project = project,
-                                        onInfoClick = { navController.navigate("view_project/${project.id}") }
-                                    )
-                                } else {
-                                    // ===== ОБНОВЛЁННЫЙ ProjectCard с onShare =====
-                                    ProjectCard(
-                                        project = project,
-                                        onClick = { navController.navigate("view_project/${project.id}") },
-                                        onShare = {
-                                            selectedProjectForShare = project
-                                            showShareContactSelector = true
-                                        },
-                                        onEdit = { navController.navigate("edit_project/${project.id}") },
-                                        onMove = { navController.navigate("move_project/${project.id}/${parentObjectId}") },
-                                        onDelete = { viewModel.showDeleteProjectConfirmation(project) }
-                                    )
-                                }
-                            }
-                        }
-
-                        // СЕКЦИЯ 3: СМЕТЫ НА КОРНЕВОМ УРОВНЕ
-                        if (!selectionMode && parentObjectId == null && rootLevelProjects.isNotEmpty()) {
-                            item {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { viewModel.toggleRootProjectsSection() }
-                                        .padding(vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "📋 Сметы (${rootLevelProjects.size})",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 18.sp,
-                                        color = Color(0xFFFF9800)
-                                    )
-                                    Icon(
-                                        if (showRootProjects) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                        contentDescription = if (showRootProjects) "Свернуть" else "Развернуть",
-                                        tint = Color.Gray
-                                    )
-                                }
-                            }
-
-                            if (showRootProjects) {
-                                items(rootLevelProjects) { project ->
-                                    ProjectCard(
-                                        project = project,
-                                        onClick = { navController.navigate("view_project/${project.id}") },
-                                        onShare = {
-                                            // Открываем диалог выбора контакта для расшаривания
-                                            selectedProjectForShare = project
-                                            showShareContactSelector = true
-                                        },
-                                        onEdit = { navController.navigate("edit_project/${project.id}") },
-                                        onMove = { navController.navigate("move_project/${project.id}/none") },
-                                        onDelete = { viewModel.showDeleteProjectConfirmation(project) }
-                                    )
-                                }
-                            }
-                        }
-
-                        // ПУСТОЕ СОСТОЯНИЕ
-                        if (!selectionMode &&
-                            filteredObjects.isEmpty() &&
-                            projectsInObject.isEmpty() &&
-                            rootLevelProjects.isEmpty() &&
-                            searchQuery.isBlank()) {
-                            item {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(32.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Icon(
-                                            Icons.Default.Folder,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(64.dp),
-                                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                                        )
-                                        Spacer(modifier = Modifier.height(16.dp))
-                                        Text(
-                                            text = "Нет объектов и смет",
-                                            fontSize = 16.sp,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text(
-                                            text = "чтобы создать объект или смету",
-                                            fontSize = 13.sp,
-                                            color = Color.Gray
-                                        )
-                                        Text(
-                                            text = "нажмите +",
-                                            fontSize = 13.sp,
-                                            color = Color.Gray
-                                        )
-                                        Spacer(modifier = Modifier.height(16.dp))
-                                    }
-                                }
-                            }
-                        }
-
-                        // СОСТОЯНИЕ ПОИСКА
-                        if (searchQuery.isNotBlank() &&
-                            filteredObjects.isEmpty() &&
-                            projectsInObject.isEmpty() &&
-                            rootLevelProjects.isEmpty()) {
-                            item {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(32.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Icon(
-                                            Icons.Default.SearchOff,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(64.dp),
-                                            tint = Color.Gray
-                                        )
-                                        Spacer(modifier = Modifier.height(16.dp))
-                                        Text(
-                                            text = "Ничего не найдено",
-                                            fontSize = 16.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = Color.Gray
-                                        )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text(
-                                            text = "По запросу \"$searchQuery\"",
-                                            fontSize = 13.sp,
-                                            color = Color.Gray
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // ===== КНОПКА "НЕ ДОБАВЛЯТЬ В ОБЪЕКТ" =====
-                        if (selectionMode && parentObjectId == null) {
-                            item {
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Button(
-                                    onClick = {
-                                        onObjectSelected?.invoke("root", "Главный экран")
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(56.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xFFFF9800),
-                                        contentColor = Color.White
-                                    ),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Home,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Text(
-                                        text = "🏠 Не добавлять в объект",
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = "Смета будет отображаться на главном экране",
-                                    fontSize = 12.sp,
-                                    color = Color.Gray,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                )
-                                Spacer(modifier = Modifier.height(16.dp))
-                            }
-                        }
-                    }
+                    ObjectsContent(
+                        data = ObjectsContentData(
+                            objects = filteredObjects,
+                            projectsInObject = projectsInObject,
+                            rootLevelProjects = rootLevelProjects,
+                            showObjectsSection = showObjectsSection,
+                            showRootProjects = showRootProjects,
+                            searchQuery = searchQuery,
+                            selectionMode = selectionMode,
+                            parentObjectId = parentObjectId
+                        ),
+                        callbacks = callbacks
+                    )
                 }
             }
         }
     }
-    if (showShareContactSelector && selectedProjectForShare != null) {
-        ShareContactSelectorDialog(
-            onDismiss = {
-                showShareContactSelector = false
-                selectedProjectForShare = null
-            },
-            onContactSelected = { contact ->
-                selectedContactForShare = contact
-                showShareContactSelector = false
-                showShareConfirmation = true
-            },
-            onNoPhoneError = { contact ->
-                selectedContactForShare = contact
-                showShareContactSelector = false
-                showNoPhoneError = true
-            }
-        )
+
+    ObjectsDialogs(
+        viewModel = viewModel,
+        navController = navController,
+        selectionMode = selectionMode,
+        parentObjectId = parentObjectId,
+        showFilterMenu = showFilterMenu,
+        onDismissFilterMenu = { showFilterMenu = false },
+        shareHolder = shareHolder
+    )
+}
+
+private class ShareHolder(
+    private val shareViewModel: ShareViewModel,
+    private val contactsViewModel: ContactsViewModel,
+    private val scope: CoroutineScope
+) {
+    var selectedProject by mutableStateOf<Project?>(null)
+        private set
+    var selectedContact by mutableStateOf<Contact?>(null)
+        private set
+    var contactMethods by mutableStateOf<List<ContactMethod>>(emptyList())
+        private set
+    var showContactSelector by mutableStateOf(false)
+        private set
+    var showConfirmation by mutableStateOf(false)
+        private set
+    var showNoPhoneError by mutableStateOf(false)
+        private set
+    var showUserNotFoundError by mutableStateOf(false)
+        private set
+
+    fun onProjectSelected(project: Project) {
+        selectedProject = project
+        showContactSelector = true
     }
-    // ===== ДИАЛОГ ПОДТВЕРЖДЕНИЯ РАСШАРИВАНИЯ =====
-    if (showShareConfirmation && selectedProjectForShare != null && selectedContactForShare != null) {
-        ShareConfirmationDialog(
-            contact = selectedContactForShare!!,
-            projectName = selectedProjectForShare!!.name,
-            onDismiss = {
-                showShareConfirmation = false
-                selectedContactForShare = null
-                showShareContactSelector = true
-            },
-            onConfirm = {
-                shareViewModel.shareProjectWithContact(
-                    projectId = selectedProjectForShare!!.id,
-                    projectName = selectedProjectForShare!!.name,
-                    contact = selectedContactForShare!!,
-                    contactMethods = contactMethodsForShare
+
+    fun onContactSelected(contact: Contact) {
+        selectedContact = contact
+        showContactSelector = false
+        scope.launch {
+            contactMethods = runCatching {
+                contactsViewModel.getContactMethods(contact.id).first()
+            }.getOrDefault(emptyList())
+        }
+        showConfirmation = true
+    }
+
+    fun onNoPhoneError(contact: Contact) {
+        selectedContact = contact
+        showContactSelector = false
+        showNoPhoneError = true
+    }
+
+    fun onConfirm() {
+        val p = selectedProject ?: return
+        val c = selectedContact ?: return
+        shareViewModel.shareProjectWithContact(p.id, c, contactMethods)
+    }
+
+    fun onSuccess() {
+        showConfirmation = false
+        showContactSelector = false
+        selectedProject = null
+        selectedContact = null
+    }
+
+    fun onError(type: ShareErrorType) {
+        showConfirmation = false
+        when (type) {
+            ShareErrorType.NO_PHONE -> showNoPhoneError = true
+            ShareErrorType.USER_NOT_FOUND -> showUserNotFoundError = true
+            else -> Unit
+        }
+    }
+
+    fun onReset() {
+        shareViewModel.resetState()
+    }
+
+    fun onDismissUserNotFound() {
+        showUserNotFoundError = false
+        selectedContact = null
+        showContactSelector = true
+    }
+
+    fun onDismissNoPhone() {
+        showNoPhoneError = false
+        selectedContact = null
+        showContactSelector = true
+    }
+
+    fun onDismissContactSelector() {
+        showContactSelector = false
+        selectedProject = null
+    }
+
+    fun onDismissConfirmation() {
+        showConfirmation = false
+        selectedContact = null
+        showContactSelector = true
+    }
+}
+
+@Composable
+private fun rememberShareHolder(
+    shareViewModel: ShareViewModel,
+    contactsViewModel: ContactsViewModel
+): ShareHolder {
+    val scope = rememberCoroutineScope()
+    return remember(shareViewModel, contactsViewModel) {
+        ShareHolder(shareViewModel, contactsViewModel, scope)
+    }
+}
+
+private data class ObjectsContentData(
+    val objects: List<ObjectModel>,
+    val projectsInObject: List<Project>,
+    val rootLevelProjects: List<Project>,
+    val showObjectsSection: Boolean,
+    val showRootProjects: Boolean,
+    val searchQuery: String,
+    val selectionMode: Boolean,
+    val parentObjectId: String?
+)
+
+private data class ObjectsContentCallbacks(
+    val onToggleObjectsSection: () -> Unit,
+    val onToggleRootProjects: () -> Unit,
+    val onObjectSelected: ((String, String) -> Unit)?,
+    val onObjectOpen: ((String, String) -> Unit)?,
+    val onShowInfo: (ObjectModel) -> Unit,
+    val onEditObject: (ObjectModel) -> Unit,
+    val onDeleteObject: (ObjectModel) -> Unit,
+    val onDeleteProject: (Project) -> Unit,
+    val onShareProject: (Project) -> Unit,
+    val onNavigateToObject: (ObjectModel) -> Unit,
+    val onViewProject: (Project) -> Unit,
+    val onEditProject: (Project) -> Unit,
+    val onMoveProject: (Project, String?) -> Unit
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ObjectsTopBar(
+    isSearchActive: Boolean,
+    selectionMode: Boolean,
+    parentObjectId: String?,
+    searchQuery: String,
+    currentFilter: ObjectFilterType,
+    currentObjectName: String?,
+    onSearchToggle: (Boolean) -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onFilterClick: () -> Unit,
+    onBackClick: () -> Unit,
+    onCloseClick: () -> Unit
+) {
+    val titleText = remember(selectionMode, parentObjectId, currentObjectName, isSearchActive) {
+        when {
+            isSearchActive -> null
+            selectionMode -> if (parentObjectId == null) {
+                "Выберите объект для перемещения"
+            } else {
+                currentObjectName ?: "Выберите объект"
+            }
+            else -> currentObjectName ?: "Объекты"
+        }
+    }
+
+    TopAppBar(
+        title = {
+            if (isSearchActive) {
+                AppSearchBar(
+                    query = searchQuery,
+                    onQueryChange = onSearchQueryChange,
+                    placeholder = getSearchPlaceholder(currentFilter),
+                    filterIcon = getObjectFilterIcon(currentFilter),
+                    onFilterClick = onFilterClick,
+                    onClose = { onSearchToggle(false) }
+                )
+            } else {
+                Text(
+                    text = titleText.orEmpty(),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
                 )
             }
-        )
-    }
-
-    // ===== ОШИБКА "НЕТ ТЕЛЕФОНА" =====
-    if (showNoPhoneError) {
-        NoPhoneErrorDialog(
-            contactName = selectedContactForShare?.name ?: "контакта",
-            onDismiss = {
-                showNoPhoneError = false
-                selectedContactForShare = null
-                showShareContactSelector = true
+        },
+        navigationIcon = {
+            when {
+                selectionMode && parentObjectId != null -> IconButton(onBackClick) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = Color.White)
+                }
+                selectionMode -> IconButton(onCloseClick) {
+                    Icon(Icons.Default.Close, "Закрыть", tint = Color.White)
+                }
+                parentObjectId != null && !isSearchActive -> IconButton(onBackClick) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = Color.White)
+                }
             }
-        )
-    }
-
-    // ===== ОШИБКА "ПОЛЬЗОВАТЕЛЬ НЕ НАЙДЕН" =====
-    if (showUserNotFoundError) {
-        val phoneNumber = contactMethodsForShare
-            .find { it.methodType.contains("телефон", ignoreCase = true) }
-            ?.value ?: "неизвестный номер"
-
-        UserNotFoundErrorDialog(
-            phoneNumber = phoneNumber,
-            onDismiss = {
-                showUserNotFoundError = false
-                selectedContactForShare = null
-                showShareContactSelector = true
+        },
+        actions = {
+            if (!isSearchActive && !selectionMode) {
+                IconButton(onClick = { onSearchToggle(true) }) {
+                    Icon(Icons.Default.Search, "Поиск", tint = Color.White)
+                }
             }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = Color.Black,
+            titleContentColor = Color.White,
+            navigationIconContentColor = Color.White,
+            actionIconContentColor = Color.White
         )
-    }
+    )
+}
 
-    // ===== ДИАЛОГ ФИЛЬТРА =====
+@Composable
+private fun ObjectsContent(
+    data: ObjectsContentData,
+    callbacks: ObjectsContentCallbacks
+) {
+    val isEmpty = !data.selectionMode &&
+            data.objects.isEmpty() &&
+            data.projectsInObject.isEmpty() &&
+            data.rootLevelProjects.isEmpty() &&
+            data.searchQuery.isBlank() &&
+            data.parentObjectId == null
+
+    val isNoResults = data.searchQuery.isNotBlank() &&
+            data.objects.isEmpty() &&
+            data.projectsInObject.isEmpty() &&
+            data.rootLevelProjects.isEmpty()
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (data.objects.isNotEmpty()) {
+            item(key = "objects_header") {
+                SectionHeader(
+                    title = "🏢 Объекты",
+                    count = data.objects.size,
+                    isExpanded = data.showObjectsSection,
+                    onToggle = callbacks.onToggleObjectsSection
+                )
+            }
+
+            if (data.showObjectsSection) {
+                items(data.objects, key = { it.id }) { obj ->
+                    if (data.selectionMode) {
+                        SelectableObjectCard(
+                            obj = obj,
+                            onSelect = { callbacks.onObjectSelected?.invoke(obj.id, obj.name) },
+                            onOpen = { callbacks.onObjectOpen?.invoke(obj.id, obj.name) },
+                            onInfo = { callbacks.onShowInfo(obj) }
+                        )
+                    } else {
+                        ObjectCard(
+                            obj = obj,
+                            onClick = { callbacks.onNavigateToObject(obj) },
+                            onEdit = { callbacks.onEditObject(obj) },
+                            onDelete = { callbacks.onDeleteObject(obj) },
+                            onInfo = { callbacks.onShowInfo(obj) }
+                        )
+                    }
+                }
+            }
+        }
+
+        if (data.objects.isNotEmpty() &&
+            (data.projectsInObject.isNotEmpty() || data.rootLevelProjects.isNotEmpty())
+        ) {
+            item(key = "divider") {
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    color = Color.Gray.copy(alpha = 0.3f),
+                    thickness = 1.dp
+                )
+            }
+        }
+
+        if (data.parentObjectId != null && data.projectsInObject.isNotEmpty()) {
+            item(key = "projects_in_object_header") {
+                SectionHeader(
+                    title = "📋 Сметы",
+                    count = data.projectsInObject.size,
+                    color = Color(0xFFFF9800)
+                )
+            }
+            items(data.projectsInObject, key = { it.id }) { project ->
+                if (data.selectionMode) {
+                    MoveProjectCardWithInfo(
+                        project = project,
+                        onInfoClick = { callbacks.onViewProject(project) }
+                    )
+                } else {
+                    ProjectCard(
+                        project = project,
+                        onClick = { callbacks.onViewProject(project) },
+                        onShare = { callbacks.onShareProject(project) },
+                        onEdit = { callbacks.onEditProject(project) },
+                        onMove = { callbacks.onMoveProject(project, data.parentObjectId) },
+                        onDelete = { callbacks.onDeleteProject(project) }
+                    )
+                }
+            }
+        }
+
+        if (!data.selectionMode && data.parentObjectId == null && data.rootLevelProjects.isNotEmpty()) {
+            item(key = "root_projects_header") {
+                SectionHeader(
+                    title = "📋 Сметы",
+                    count = data.rootLevelProjects.size,
+                    isExpanded = data.showRootProjects,
+                    onToggle = callbacks.onToggleRootProjects,
+                    color = Color(0xFFFF9800)
+                )
+            }
+            if (data.showRootProjects) {
+                items(data.rootLevelProjects, key = { it.id }) { project ->
+                    ProjectCard(
+                        project = project,
+                        onClick = { callbacks.onViewProject(project) },
+                        onShare = { callbacks.onShareProject(project) },
+                        onEdit = { callbacks.onEditProject(project) },
+                        onMove = { callbacks.onMoveProject(project, null) },
+                        onDelete = { callbacks.onDeleteProject(project) }
+                    )
+                }
+            }
+        }
+
+        if (isEmpty) {
+            item(key = "empty_state") {
+                EmptyState(
+                    icon = Icons.Default.Folder,
+                    title = "Нет объектов и смет",
+                    subtitle = "нажмите + чтобы создать"
+                )
+            }
+        }
+        if (isNoResults) {
+            item(key = "no_results") {
+                EmptyState(
+                    icon = Icons.Default.SearchOff,
+                    title = "Ничего не найдено",
+                    subtitle = "По запросу \"${data.searchQuery}\""
+                )
+            }
+        }
+
+        if (data.selectionMode && data.parentObjectId == null) {
+            item(key = "root_selection") {
+                RootSelectionButton(
+                    onSelectRoot = { callbacks.onObjectSelected?.invoke("root", "Главный экран") }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ObjectsDialogs(
+    viewModel: ObjectsViewModel,
+    navController: NavController,
+    selectionMode: Boolean,
+    parentObjectId: String?,
+    showFilterMenu: Boolean,
+    onDismissFilterMenu: () -> Unit,
+    shareHolder: ShareHolder
+) {
+    val currentFilter by viewModel.currentFilter.collectAsStateWithLifecycle()
+    val showCreateDialog by viewModel.showCreateDialog.collectAsStateWithLifecycle()
+    val showCreateTypeDialog by viewModel.showCreateTypeDialog.collectAsStateWithLifecycle()
+    val showDeleteConfirmation by viewModel.showDeleteConfirmation.collectAsStateWithLifecycle()
+    val objectToDelete by viewModel.objectToDelete.collectAsStateWithLifecycle()
+    val showInfoDialog by viewModel.showInfoDialog.collectAsStateWithLifecycle()
+    val infoObject by viewModel.infoObject.collectAsStateWithLifecycle()
+    val showEditDialog by viewModel.showEditDialog.collectAsStateWithLifecycle()
+    val editingObject by viewModel.editingObject.collectAsStateWithLifecycle()
+    val showDeleteProjectConfirmation by viewModel.showDeleteProjectConfirmation.collectAsStateWithLifecycle()
+    val projectToDelete by viewModel.projectToDelete.collectAsStateWithLifecycle()
+
     if (showFilterMenu) {
-        AlertDialog(
-            onDismissRequest = { showFilterMenu = false },
-            title = { Text("Выберите тип поиска") },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilterOptionObj(
-                        title = "По названию",
-                        isSelected = currentFilter == ObjectFilterType.BY_NAME,
-                        onClick = {
-                            viewModel.updateSearchFilter(ObjectFilterType.BY_NAME)
-                            showFilterMenu = false
-                        },
-                        icon = Icons.Default.Folder
-                    )
-                    FilterOptionObj(
-                        title = "По описанию",
-                        isSelected = currentFilter == ObjectFilterType.BY_DESCRIPTION,
-                        onClick = {
-                            viewModel.updateSearchFilter(ObjectFilterType.BY_DESCRIPTION)
-                            showFilterMenu = false
-                        },
-                        icon = Icons.Default.Description
-                    )
-                    FilterOptionObj(
-                        title = "По адресу",
-                        isSelected = currentFilter == ObjectFilterType.BY_ADDRESS,
-                        onClick = {
-                            viewModel.updateSearchFilter(ObjectFilterType.BY_ADDRESS)
-                            showFilterMenu = false
-                        },
-                        icon = Icons.Default.LocationOn
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showFilterMenu = false }) {
-                    Text("Отмена")
-                }
-            }
+        ObjectFilterDialog(
+            currentFilter = currentFilter,
+            onFilterSelected = viewModel::updateSearchFilter,
+            onDismiss = onDismissFilterMenu
         )
     }
 
-    // ===== ОСТАЛЬНЫЕ ДИАЛОГИ (без изменений) =====
     if (showCreateTypeDialog && !selectionMode) {
         CreateTypeDialog(
-            onDismiss = { viewModel.hideCreateTypeDialog() },
+            onDismiss = viewModel::hideCreateTypeDialog,
             onCreateObject = {
                 viewModel.hideCreateTypeDialog()
                 viewModel.showCreateDialog()
             },
             onCreateProject = {
                 viewModel.hideCreateTypeDialog()
-                val objectId = parentObjectId ?: "none"
-                navController.navigate("create_project/$objectId")
-            },
-            isInsideObject = parentObjectId != null
+                navController.navigate("create_project/${parentObjectId ?: "none"}")
+            }
         )
     }
 
     if (showCreateDialog && !selectionMode) {
         CreateObjectDialog(
-            onDismiss = { viewModel.hideCreateDialog() },
-            onCreate = { name, street, house, building, description ->
-                viewModel.createObject(name, street, house, building, description)
-            }
+            onDismiss = viewModel::hideCreateDialog,
+            onCreate = viewModel::createObject
         )
     }
 
     if (showDeleteConfirmation && objectToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { viewModel.hideDeleteConfirmation() },
-            title = { Text("Удалить объект") },
-            text = { Text("Вы уверены, что хотите удалить объект \"${objectToDelete?.name ?: ""}\"? Все дочерние объекты и сметы также будут удалены.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        objectToDelete?.let { viewModel.deleteObject(it) }
-                        viewModel.hideDeleteConfirmation()
-                    }
-                ) {
-                    Text("Удалить", color = Color.Red)
-                }
+        ConfirmationDialog(
+            title = "Удалить объект",
+            message = "Вы уверены, что хотите удалить объект \"${objectToDelete?.name ?: ""}\"? Все дочерние объекты и сметы также будут удалены.",
+            onConfirm = {
+                objectToDelete?.let { viewModel.deleteObject(it) }
+                viewModel.hideDeleteConfirmation()
             },
-            dismissButton = {
-                TextButton(onClick = { viewModel.hideDeleteConfirmation() }) {
-                    Text("Отмена")
-                }
-            }
+            onDismiss = viewModel::hideDeleteConfirmation
         )
     }
 
     if (showEditDialog && editingObject != null && !selectionMode) {
+        val currentEditing = editingObject!!
         EditObjectDialog(
-            obj = editingObject!!,
-            onDismiss = { viewModel.hideEditDialog() },
+            obj = currentEditing,
+            onDismiss = viewModel::hideEditDialog,
             onSave = { name, street, house, building, description ->
-                val updatedObj = editingObject!!.copy(
-                    name = name,
-                    street = street,
-                    house = house,
-                    building = building,
-                    description = description
+                viewModel.updateObject(
+                    currentEditing.copy(
+                        name = name,
+                        street = street,
+                        house = house,
+                        building = building,
+                        description = description
+                    )
                 )
-                viewModel.updateObject(updatedObj)
             }
         )
     }
 
     if (showInfoDialog && infoObject != null) {
-        val infoObj = infoObject!!
-        val clipboardManager = LocalClipboardManager.current
-        val formattedAddress = infoObj.getFormattedAddress()
-
-        AlertDialog(
-            onDismissRequest = { viewModel.hideInfoDialog() },
-            title = { Text(infoObj.name) },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp)
-                ) {
-                    if (formattedAddress.isNotBlank()) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    clipboardManager.setText(AnnotatedString(formattedAddress))
-                                }
-                        ) {
-                            Icon(
-                                Icons.Default.LocationOn,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = Color.Gray
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(formattedAddress)
-                            Spacer(modifier = Modifier.weight(1f))
-                            Icon(
-                                Icons.Default.ContentCopy,
-                                contentDescription = "Копировать",
-                                modifier = Modifier.size(16.dp),
-                                tint = Color.Gray
-                            )
-                        }
-                    }
-                    if (infoObj.description.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.Description,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = Color.Gray
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(infoObj.description)
-                        }
-                    }
-                    if (formattedAddress.isBlank() && infoObj.description.isBlank()) {
-                        Text("Нет дополнительной информации")
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { viewModel.hideInfoDialog() }) {
-                    Text("Закрыть")
-                }
-            }
+        ObjectInfoDialog(
+            obj = infoObject!!,
+            onDismiss = viewModel::hideInfoDialog
         )
     }
 
     if (showDeleteProjectConfirmation && projectToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { viewModel.hideDeleteProjectConfirmation() },
-            title = { Text("Удалить смету") },
-            text = {
-                Text("Вы уверены, что хотите удалить смету \"${projectToDelete!!.name}\"? Все материалы и работы будут удалены безвозвратно.")
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { viewModel.confirmDeleteProject() }
+        ConfirmationDialog(
+            title = "Удалить смету",
+            message = "Вы уверены, что хотите удалить смету \"${projectToDelete!!.name}\"? Все материалы и работы будут удалены безвозвратно.",
+            onConfirm = viewModel::confirmDeleteProject,
+            onDismiss = viewModel::hideDeleteProjectConfirmation
+        )
+    }
+
+    ShareDialogs(holder = shareHolder)
+}
+
+@Composable
+private fun ShareDialogs(holder: ShareHolder) {
+    val project = holder.selectedProject
+    val contact = holder.selectedContact
+
+    if (holder.showContactSelector && project != null) {
+        ContactSelectorDialog(
+            config = ContactSelectorConfig(
+                title = "Выберите контакт",
+                requirePhone = true
+            ),
+            onDismiss = holder::onDismissContactSelector,
+            onSelect = holder::onContactSelected,
+            onNoPhoneError = holder::onNoPhoneError
+        )
+    }
+
+    if (holder.showConfirmation && project != null && contact != null) {
+        ShareConfirmationDialog(
+            contact = contact,
+            projectName = project.name,
+            onDismiss = holder::onDismissConfirmation,
+            onConfirm = holder::onConfirm
+        )
+    }
+
+    if (holder.showNoPhoneError) {
+        NoPhoneErrorDialog(
+            contactName = contact?.name ?: "контакта",
+            onDismiss = holder::onDismissNoPhone
+        )
+    }
+
+    if (holder.showUserNotFoundError) {
+        val phoneNumber = holder.contactMethods
+            .find { it.methodType.contains("телефон", ignoreCase = true) }
+            ?.value ?: "неизвестный номер"
+
+        UserNotFoundErrorDialog(
+            phoneNumber = phoneNumber,
+            onDismiss = holder::onDismissUserNotFound
+        )
+    }
+}
+
+@Composable
+private fun RootSelectionButton(onSelectRoot: () -> Unit) {
+    Column {
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = onSelectRoot,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFFFF9800),
+                contentColor = Color.White
+            ),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Default.Home, contentDescription = null, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.width(12.dp))
+            Text("🏠 Не добавлять в объект", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Смета будет отображаться на главном экране",
+            fontSize = 12.sp,
+            color = Color.Gray,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(16.dp))
+    }
+}
+
+@Composable
+fun ObjectFilterDialog(
+    currentFilter: ObjectFilterType,
+    onFilterSelected: (ObjectFilterType) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Выберите тип поиска") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterOption(
+                    title = "По названию",
+                    icon = Icons.Default.Folder,
+                    isSelected = currentFilter == ObjectFilterType.BY_NAME
                 ) {
-                    Text("Удалить", color = Color.Red)
+                    onFilterSelected(ObjectFilterType.BY_NAME); onDismiss()
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.hideDeleteProjectConfirmation() }) {
-                    Text("Отмена")
+                FilterOption(
+                    title = "По описанию",
+                    icon = Icons.Default.Description,
+                    isSelected = currentFilter == ObjectFilterType.BY_DESCRIPTION
+                ) {
+                    onFilterSelected(ObjectFilterType.BY_DESCRIPTION); onDismiss()
+                }
+                FilterOption(
+                    title = "По адресу",
+                    icon = Icons.Default.LocationOn,
+                    isSelected = currentFilter == ObjectFilterType.BY_ADDRESS
+                ) {
+                    onFilterSelected(ObjectFilterType.BY_ADDRESS); onDismiss()
                 }
             }
-        )
-    }
-}
-
-// НОВАЯ КАРТОЧКА ДЛЯ СМЕТ НА КОРНЕВОМ УРОВНЕ
-
-
-// Остальные функции остаются без изменений
-@Composable
-fun FilterOptionObj(
-    title: String,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    icon: androidx.compose.ui.graphics.vector.ImageVector
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() },
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected)
-                MaterialTheme.colorScheme.primaryContainer
-            else MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                modifier = Modifier.size(24.dp),
-                tint = if (isSelected)
-                    MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = title,
-                color = if (isSelected)
-                    MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurface
-            )
-        }
-    }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+    )
 }
 
 @Composable
-fun SelectableObjectCard(
-    obj: ObjectModel,
-    onSelect: () -> Unit,
-    onOpen: () -> Unit,
-    onInfo: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onOpen() },
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = obj.name,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-                val formattedAddress = obj.getFormattedAddress()
+fun ObjectInfoDialog(obj: ObjectModel, onDismiss: () -> Unit) {
+    val clipboardManager = LocalClipboardManager.current
+    val formattedAddress = obj.getFormattedAddress()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(obj.name) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp)
+            ) {
                 if (formattedAddress.isNotBlank()) {
-                    Text(
+                    InfoRow(
+                        icon = Icons.Default.LocationOn,
                         text = formattedAddress,
-                        fontSize = 12.sp,
-                        color = Color.Gray,
-                        maxLines = 2
+                        onClick = { clipboardManager.setText(AnnotatedString(formattedAddress)) }
                     )
                 }
-            }
-            Row {
-                IconButton(onClick = onInfo) {
-                    Icon(
-                        Icons.Default.Info,
-                        contentDescription = "Информация",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
+                if (obj.description.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    InfoRow(icon = Icons.Default.Description, text = obj.description)
                 }
-                Button(onClick = onSelect) {
-                    Text("Выбрать")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun CreateTypeDialog(
-    onDismiss: () -> Unit,
-    onCreateObject: () -> Unit,
-    onCreateProject: () -> Unit,
-    isInsideObject: Boolean = true
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Создать") },
-        text = { Text("Что вы хотите создать?") },
-        confirmButton = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = onCreateObject,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Объект")
-                    }
-                    Button(
-                        onClick = onCreateProject,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Смета")
-                    }
-                }
-                TextButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Отмена")
+                if (formattedAddress.isBlank() && obj.description.isBlank()) {
+                    Text("Нет дополнительной информации")
                 }
             }
         },
-        dismissButton = {}
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun EditObjectDialog(
-    obj: ObjectModel,
-    onDismiss: () -> Unit,
-    onSave: (String, String, String, String, String) -> Unit
-) {
-    var name by remember { mutableStateOf(obj.name) }
-    var street by remember { mutableStateOf(obj.street) }
-    var house by remember { mutableStateOf(obj.house) }
-    var building by remember { mutableStateOf(obj.building) }
-    var description by remember { mutableStateOf(obj.description) }
-
-    var streetError by remember { mutableStateOf<String?>(null) }
-    var houseError by remember { mutableStateOf<String?>(null) }
-    var buildingError by remember { mutableStateOf<String?>(null) }
-
-    fun validateStreet(value: String): Boolean {
-        return if (value.isNotBlank()) {
-            if (value.any { it.isDigit() }) {
-                streetError = "Улица не может содержать цифры"
-                false
-            } else {
-                streetError = null
-                true
-            }
-        } else {
-            streetError = null
-            true
-        }
-    }
-
-    fun validateHouse(value: String): Boolean {
-        return if (value.isNotBlank()) {
-            if (!value.any { it.isDigit() }) {
-                houseError = "Дом должен содержать цифры"
-                false
-            } else {
-                val firstDigitIndex = value.indexOfFirst { it.isDigit() }
-                val firstLetterIndex = value.indexOfFirst { it.isLetter() }
-
-                if (firstLetterIndex != -1 && firstLetterIndex < firstDigitIndex) {
-                    houseError = "Буквы не могут идти перед цифрами"
-                    false
-                }
-                else {
-                    val lettersAfterDigits = value.substring(firstDigitIndex).count { it.isLetter() }
-                    if (lettersAfterDigits > 1) {
-                        houseError = "После цифр может быть только одна буква"
-                        false
-                    }
-                    else if (lettersAfterDigits == 1 && !value.last().isLetter()) {
-                        houseError = "Буква должна быть в конце номера дома"
-                        false
-                    }
-                    else {
-                        houseError = null
-                        true
-                    }
-                }
-            }
-        } else {
-            houseError = null
-            true
-        }
-    }
-
-    fun validateBuilding(value: String): Boolean {
-        return if (value.isNotBlank()) {
-            if (!value.any { it.isDigit() }) {
-                buildingError = "Корпус должен содержать цифры"
-                false
-            } else {
-                val firstDigitIndex = value.indexOfFirst { it.isDigit() }
-                val lastLetterIndex = value.indexOfLast { it.isLetter() }
-
-                if (lastLetterIndex != -1 && lastLetterIndex > firstDigitIndex) {
-                    buildingError = "Буквы могут быть только в начале"
-                    false
-                } else {
-                    buildingError = null
-                    true
-                }
-            }
-        } else {
-            buildingError = null
-            true
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Редактировать объект") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Название объекта*") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    isError = name.isBlank()
-                )
-
-                OutlinedTextField(
-                    value = street,
-                    onValueChange = {
-                        street = it
-                        validateStreet(it)
-                    },
-                    label = { Text("Улица") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    isError = streetError != null,
-                    supportingText = streetError?.let { { Text(it, color = Color.Red) } }
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = house,
-                        onValueChange = {
-                            house = it
-                            validateHouse(it)
-                        },
-                        label = { Text("Дом") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        isError = houseError != null,
-                        supportingText = houseError?.let { { Text(it, color = Color.Red) } }
-                    )
-
-                    OutlinedTextField(
-                        value = building,
-                        onValueChange = {
-                            building = it
-                            validateBuilding(it)
-                        },
-                        label = { Text("Корпус") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        isError = buildingError != null,
-                        supportingText = buildingError?.let { { Text(it, color = Color.Red) } }
-                    )
-                }
-
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Описание") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2
-                )
-
-                if (street.isNotBlank() || house.isNotBlank() || building.isNotBlank()) {
-                    val preview = buildString {
-                        if (street.isNotBlank()) append("ул. $street")
-                        if (house.isNotBlank()) {
-                            if (isNotEmpty()) append(", ")
-                            append("д. $house")
-                        }
-                        if (building.isNotBlank()) {
-                            if (isNotEmpty()) append(", ")
-                            append("к. $building")
-                        }
-                    }
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
-                        )
-                    ) {
-                        Text(
-                            text = preview,
-                            modifier = Modifier.padding(12.dp),
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val isStreetValid = if (street.isNotBlank()) validateStreet(street) else true
-                    val isHouseValid = if (house.isNotBlank()) validateHouse(house) else true
-                    val isBuildingValid = if (building.isNotBlank()) validateBuilding(building) else true
-
-                    if (name.isNotBlank() && isStreetValid && isHouseValid && isBuildingValid) {
-                        onSave(name, street, house, building, description)
-                        onDismiss()
-                    }
-                },
-                enabled = name.isNotBlank()
-            ) {
-                Text("Сохранить")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Отмена")
-            }
-        }
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
     )
 }
 
 @Composable
-fun ObjectCard(
-    obj: ObjectModel,
-    onClick: () -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
-    onInfo: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() },
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = obj.name,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
-                    )
-                    val formattedAddress = obj.getFormattedAddress()
-                    if (formattedAddress.isNotBlank()) {
-                        Text(
-                            text = formattedAddress,
-                            fontSize = 12.sp,
-                            color = Color.Gray,
-                            maxLines = 2
-                        )
-                    }
-                }
-                Row {
-                    IconButton(onClick = onInfo) {
-                        Icon(
-                            Icons.Default.Info,
-                            contentDescription = "Информация",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    IconButton(onClick = onEdit) {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = "Редактировать",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    IconButton(onClick = onDelete) {
-                        Icon(
-                            Icons.Default.Delete,
-                            contentDescription = "Удалить",
-                            tint = MaterialTheme.colorScheme.error
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun CreateObjectDialog(
-    onDismiss: () -> Unit,
-    onCreate: (String, String, String, String, String) -> Unit
-) {
-    var name by remember { mutableStateOf("") }
-    var street by remember { mutableStateOf("") }
-    var house by remember { mutableStateOf("") }
-    var building by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-
-    var streetError by remember { mutableStateOf<String?>(null) }
-    var houseError by remember { mutableStateOf<String?>(null) }
-    var buildingError by remember { mutableStateOf<String?>(null) }
-
-    fun validateStreet(value: String): Boolean {
-        return if (value.isNotBlank()) {
-            if (value.any { it.isDigit() }) {
-                streetError = "Улица не может содержать цифры"
-                false
-            } else {
-                streetError = null
-                true
-            }
-        } else {
-            streetError = null
-            true
-        }
-    }
-
-    fun validateHouse(value: String): Boolean {
-        return if (value.isNotBlank()) {
-            if (!value.any { it.isDigit() }) {
-                houseError = "Дом должен содержать цифры"
-                false
-            } else {
-                val firstDigitIndex = value.indexOfFirst { it.isDigit() }
-                val firstLetterIndex = value.indexOfFirst { it.isLetter() }
-
-                if (firstLetterIndex != -1 && firstLetterIndex < firstDigitIndex) {
-                    houseError = "Буквы не могут идти перед цифрами"
-                    false
-                }
-                else {
-                    val lettersAfterDigits = value.substring(firstDigitIndex).count { it.isLetter() }
-                    if (lettersAfterDigits > 1) {
-                        houseError = "После цифр может быть только одна буква"
-                        false
-                    }
-                    else if (lettersAfterDigits == 1 && !value.last().isLetter()) {
-                        houseError = "Буква должна быть в конце номера дома"
-                        false
-                    }
-                    else {
-                        houseError = null
-                        true
-                    }
-                }
-            }
-        } else {
-            houseError = null
-            true
-        }
-    }
-
-    fun validateBuilding(value: String): Boolean {
-        return if (value.isNotBlank()) {
-            if (!value.any { it.isDigit() }) {
-                buildingError = "Корпус должен содержать цифры"
-                false
-            } else {
-                val firstDigitIndex = value.indexOfFirst { it.isDigit() }
-                val lastLetterIndex = value.indexOfLast { it.isLetter() }
-
-                if (lastLetterIndex != -1 && lastLetterIndex > firstDigitIndex) {
-                    buildingError = "Буквы могут быть только в начале"
-                    false
-                } else {
-                    buildingError = null
-                    true
-                }
-            }
-        } else {
-            buildingError = null
-            true
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Создать объект") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Название объекта*") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    isError = name.isBlank()
-                )
-
-                OutlinedTextField(
-                    value = street,
-                    onValueChange = {
-                        street = it
-                        validateStreet(it)
-                    },
-                    label = { Text("Улица") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    isError = streetError != null,
-                    supportingText = streetError?.let { { Text(it, color = Color.Red) } }
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = house,
-                        onValueChange = {
-                            house = it
-                            validateHouse(it)
-                        },
-                        label = { Text("Дом") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        isError = houseError != null,
-                        supportingText = houseError?.let { { Text(it, color = Color.Red) } }
-                    )
-
-                    OutlinedTextField(
-                        value = building,
-                        onValueChange = {
-                            building = it
-                            validateBuilding(it)
-                        },
-                        label = { Text("Корпус") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        isError = buildingError != null,
-                        supportingText = buildingError?.let { { Text(it, color = Color.Red) } }
-                    )
-                }
-
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Описание") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2
-                )
-
-                if (street.isNotBlank() || house.isNotBlank() || building.isNotBlank()) {
-                    val preview = buildString {
-                        if (street.isNotBlank()) append("ул. $street")
-                        if (house.isNotBlank()) {
-                            if (isNotEmpty()) append(", ")
-                            append("д. $house")
-                        }
-                        if (building.isNotBlank()) {
-                            if (isNotEmpty()) append(", ")
-                            append("к. $building")
-                        }
-                    }
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
-                        )
-                    ) {
-                        Text(
-                            text = "Предпросмотр: $preview",
-                            modifier = Modifier.padding(12.dp),
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    if (name.isNotBlank()) {
-                        onCreate(name, street, house, building, description)
-                        onDismiss()
-                    }
-                },
-                enabled = name.isNotBlank()
-            ) {
-                Text("Создать")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Отмена")
-            }
-        }
-    )
-}
-
-@Composable
-fun ContactSelectorRow(
-    label: String,
-    selectedContact: Contact?,
-    onSelect: (Contact) -> Unit,
-    onShowSelector: () -> Unit
+private fun InfoRow(
+    icon: ImageVector,
+    text: String,
+    onClick: (() -> Unit)? = null
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
     ) {
-        if (selectedContact != null) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = selectedContact.name,
-                    fontWeight = FontWeight.Medium
-                )
-                if (selectedContact.description.isNotBlank()) {
-                    Text(
-                        text = selectedContact.description,
-                        fontSize = 12.sp,
-                        color = Color.Gray
-                    )
-                }
-            }
-            IconButton(onClick = { onSelect(selectedContact) }) {
-                Icon(Icons.Default.Edit, contentDescription = "Изменить", modifier = Modifier.size(20.dp))
-            }
-        } else {
-            Text(
-                text = "Не выбран",
-                color = Color.Gray,
-                modifier = Modifier.weight(1f)
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.Gray)
+        Spacer(Modifier.width(8.dp))
+        Text(text, modifier = Modifier.weight(1f))
+        if (onClick != null) {
+            Icon(
+                Icons.Default.ContentCopy,
+                contentDescription = "Копировать",
+                modifier = Modifier.size(16.dp),
+                tint = Color.Gray
             )
         }
-
-        Button(
-            onClick = onShowSelector,
-            modifier = Modifier.width(100.dp)
-        ) {
-            Text(if (selectedContact != null) "Изменить" else "Выбрать")
-        }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ContactSelectionDialog(
-    title: String,
-    contacts: List<Contact>,
-    onDismiss: () -> Unit,
-    onSelect: (Contact) -> Unit
-) {
-    var searchQuery by remember { mutableStateOf("") }
-    val filteredContacts = if (searchQuery.isBlank()) {
-        contacts
-    } else {
-        contacts.filter { contact ->
-            contact.name.contains(searchQuery, ignoreCase = true) ||
-                    contact.description.contains(searchQuery, ignoreCase = true)
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 400.dp)
-            ) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    label = { Text("Поиск контакта") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(filteredContacts) { contact ->
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onSelect(contact) },
-                            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(12.dp)
-                            ) {
-                                Text(
-                                    text = contact.name,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                if (contact.description.isNotBlank()) {
-                                    Text(
-                                        text = contact.description,
-                                        fontSize = 12.sp,
-                                        color = Color.Gray
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Отмена")
-            }
-        }
-    )
+private fun getSearchPlaceholder(filter: ObjectFilterType): String = when (filter) {
+    ObjectFilterType.BY_NAME -> "Поиск по названию..."
+    ObjectFilterType.BY_DESCRIPTION -> "Поиск по описанию..."
+    ObjectFilterType.BY_ADDRESS -> "Поиск по адресу..."
 }
 
-@Composable
-fun MoveProjectCardWithInfo(
-    project: Project,
-    onInfoClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = project.name,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 14.sp
-                )
-                Text(
-                    text = "Расходы: ${String.format(Locale.US, "%.2f", project.totalBudget)} ₽",
-                    fontSize = 11.sp,
-                    color = Color.Gray
-                )
-            }
-            IconButton(onClick = onInfoClick) {
-                Icon(
-                    Icons.Default.Info,
-                    contentDescription = "Информация о смете",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
-    }
+private fun getObjectFilterIcon(filter: ObjectFilterType): ImageVector = when (filter) {
+    ObjectFilterType.BY_NAME -> Icons.Default.Folder
+    ObjectFilterType.BY_DESCRIPTION -> Icons.Default.Description
+    ObjectFilterType.BY_ADDRESS -> Icons.Default.LocationOn
 }
-//@Composable
-//fun ProjectCard2(
-//    project: Project,
-//    onView: () -> Unit,
-//    onEdit: () -> Unit,
-//    onMove: () -> Unit,
-//    onDelete: () -> Unit
-////) {
-//    Card(
-//        modifier = Modifier
-//            .fillMaxWidth()
-//            .clickable { onView() },
-//        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-//        colors = CardDefaults.cardColors(
-//            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-//        ),
-//        shape = RoundedCornerShape(8.dp)
-//    ) {
-//        Row(
-//            modifier = Modifier
-//                .fillMaxWidth()
-//                .padding(12.dp),
-//            horizontalArrangement = Arrangement.SpaceBetween,
-//            verticalAlignment = Alignment.CenterVertically
-//        ) {
-//            Column(modifier = Modifier.weight(1f)) {
-//                Row(verticalAlignment = Alignment.CenterVertically) {
-//                    Icon(
-//                        Icons.Default.Receipt,
-//                        contentDescription = null,
-//                        modifier = Modifier.size(18.dp),
-//                        tint = Color(0xFFFF9800)
-//                    )
-//                    Spacer(modifier = Modifier.width(8.dp))
-//                    Text(
-//                        text = project.name,
-//                        fontWeight = FontWeight.Medium,
-//                        fontSize = 15.sp
-//                    )
-//                }
-//                if (project.description.isNotBlank()) {
-//                    Spacer(modifier = Modifier.height(4.dp))
-//                    Text(
-//                        text = project.description,
-//                        fontSize = 12.sp,
-//                        color = Color.Gray,
-//                        maxLines = 1
-//                    )
-//                }
-//                Spacer(modifier = Modifier.height(4.dp))
-//                Text(
-//                    text = "💰 Бюджет: ${String.format(Locale.US, "%.2f", project.totalBudget)} ₽",
-//                    fontSize = 12.sp,
-//                    color = MaterialTheme.colorScheme.primary,
-//                    fontWeight = FontWeight.Medium
-//                )
-//            }
-//            Row {
-//                IconButton(onClick = onMove, modifier = Modifier.size(36.dp)) {
-//                    Icon(
-//                        Icons.Default.SwapHoriz,
-//                        contentDescription = "Переместить",
-//                        modifier = Modifier.size(20.dp),
-//                        tint = MaterialTheme.colorScheme.primary
-//                    )
-//                }
-//                IconButton(onClick = onEdit, modifier = Modifier.size(36.dp)) {
-//                    Icon(
-//                        Icons.Default.Edit,
-//                        contentDescription = "Редактировать",
-//                        modifier = Modifier.size(20.dp),
-//                        tint = MaterialTheme.colorScheme.primary
-//                    )
-//                }
-//                IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
-//                    Icon(
-//                        Icons.Default.Delete,
-//                        contentDescription = "Удалить",
-//                        modifier = Modifier.size(20.dp),
-//                        tint = MaterialTheme.colorScheme.error
-//                    )
-//                }
-//            }
-//        }
-//    }
-//}

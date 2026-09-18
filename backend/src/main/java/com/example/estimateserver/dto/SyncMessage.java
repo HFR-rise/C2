@@ -9,7 +9,9 @@ public class SyncMessage {
     private String entityId;
     private Object data;
     private String userId;
-    private Date timestamp;     private Long version;
+    private Date timestamp;
+    private Long version;
+
     public SyncMessage() {}
 
     public SyncMessage(String type, String entityType, String entityId, Object data,
