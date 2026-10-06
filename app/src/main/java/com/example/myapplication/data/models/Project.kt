@@ -10,7 +10,9 @@ import java.util.UUID
     tableName = "projects",
     indices = [
         Index(value = ["userId"]),
-        Index(value = ["objectId"])
+        Index(value = ["objectId"]),
+        Index(value = ["myRole"]),
+        Index(value = ["needsSync"])
     ]
 )
 data class Project(
@@ -20,17 +22,22 @@ data class Project(
     val description: String = "",
     val shareStatus: ShareStatus = ShareStatus.PENDING,
     val objectId: String? = null,
-    val customerContactId: String? = null,
-    val foremanContactId: String? = null,
-    val managerContactId: String? = null,
-    val includeForeman: Boolean = false,
-    val includeManager: Boolean = false,
     val createdAt: Date = Date(),
     val updatedAt: Date = Date(),
     val status: ProjectStatus = ProjectStatus.ACTIVE,
     val totalBudget: Double = 0.0,
     val totalSpent: Double = 0.0,
-    val userId: String = ""
+    val userId: String = "",
+    val version: Long? = null,
+
+
+    val state: String = "DRAFT",
+
+    val hasPendingChanges: Boolean = false,
+
+    val myRole: String? = null,
+
+    val needsSync: Boolean = false
 )
 
 enum class ProjectStatus {

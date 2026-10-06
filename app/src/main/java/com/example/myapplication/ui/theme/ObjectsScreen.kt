@@ -1,6 +1,5 @@
 package com.example.myapplication.ui.theme
 
-import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,14 +48,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -65,38 +62,24 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
-import com.example.myapplication.data.models.Contact
-import com.example.myapplication.data.models.ContactMethod
 import com.example.myapplication.data.models.ObjectModel
 import com.example.myapplication.data.models.Project
 import com.example.myapplication.ui.components.AppSearchBar
 import com.example.myapplication.ui.components.ConfirmationDialog
-import com.example.myapplication.ui.components.ContactSelectorConfig
-import com.example.myapplication.ui.components.ContactSelectorDialog
 import com.example.myapplication.ui.components.CreateObjectDialog
 import com.example.myapplication.ui.components.CreateTypeDialog
 import com.example.myapplication.ui.components.EditObjectDialog
 import com.example.myapplication.ui.components.EmptyState
 import com.example.myapplication.ui.components.FilterOption
 import com.example.myapplication.ui.components.MoveProjectCardWithInfo
-import com.example.myapplication.ui.components.NoPhoneErrorDialog
 import com.example.myapplication.ui.components.ObjectCard
 import com.example.myapplication.ui.components.ProjectCard
 import com.example.myapplication.ui.components.SectionHeader
 import com.example.myapplication.ui.components.SelectableObjectCard
-import com.example.myapplication.ui.components.ShareConfirmationDialog
-import com.example.myapplication.ui.components.UserNotFoundErrorDialog
-import com.example.myapplication.viewmodels.ContactsViewModel
 import com.example.myapplication.viewmodels.ObjectFilterType
 import com.example.myapplication.viewmodels.ObjectsViewModel
-import com.example.myapplication.viewmodels.ShareErrorType
-import com.example.myapplication.viewmodels.ShareViewModel
-import com.example.myapplication.viewmodels.SharingState
 import com.google.accompanist.swiperefresh.SwipeRefresh
 import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -124,42 +107,17 @@ fun ObjectsScreen(
     var showFilterMenu by remember { mutableStateOf(false) }
     var showObjectsSection by remember { mutableStateOf(true) }
 
-    val context = LocalContext.current
     val swipeRefreshState = rememberSwipeRefreshState(isRefreshing)
-
-    val shareViewModel: ShareViewModel = hiltViewModel()
-    val contactsViewModel: ContactsViewModel = hiltViewModel()
-    val shareHolder = rememberShareHolder(shareViewModel, contactsViewModel)
 
     LaunchedEffect(parentObjectId) {
         viewModel.updateParentId(parentObjectId)
-    }
-
-    val sharingState by shareViewModel.sharingState.collectAsStateWithLifecycle()
-
-    LaunchedEffect(sharingState) {
-        when (val s = sharingState) {
-            is SharingState.Success -> {
-                Toast.makeText(context, "Смета отправлена!", Toast.LENGTH_SHORT).show()
-                shareHolder.onSuccess()
-                shareHolder.onReset()
-            }
-            is SharingState.Error -> {
-                if (s.type == ShareErrorType.OTHER) {
-                    Toast.makeText(context, s.message ?: "Ошибка", Toast.LENGTH_SHORT).show()
-                }
-                shareHolder.onError(s.type)
-                shareHolder.onReset()
-            }
-            else -> Unit
-        }
     }
 
     DisposableEffect(Unit) {
         onDispose { viewModel.clearSearch() }
     }
 
-    val callbacks = remember(navController, shareHolder) {
+    val callbacks = remember(navController) {
         ObjectsContentCallbacks(
             onToggleObjectsSection = { showObjectsSection = !showObjectsSection },
             onToggleRootProjects = viewModel::toggleRootProjectsSection,
@@ -169,10 +127,14 @@ fun ObjectsScreen(
             onEditObject = viewModel::startEditing,
             onDeleteObject = viewModel::showDeleteConfirmation,
             onDeleteProject = viewModel::showDeleteProjectConfirmation,
-            onShareProject = shareHolder::onProjectSelected,
             onNavigateToObject = { navController.navigate("objects/${it.id}") },
             onViewProject = { navController.navigate("view_project/${it.id}") },
-            onEditProject = { navController.navigate("edit_project/${it.id}") },
+            onEditProject = { project ->
+                when (project.myRole) {
+                    "ESTIMATOR" -> navController.navigate("edit_draft/${project.id}")
+                    else -> navController.navigate("edit_project/${project.id}")
+                }
+            },
             onMoveProject = { project, fromObjectId ->
                 navController.navigate("move_project/${project.id}/${fromObjectId ?: "none"}")
             }
@@ -252,112 +214,8 @@ fun ObjectsScreen(
         selectionMode = selectionMode,
         parentObjectId = parentObjectId,
         showFilterMenu = showFilterMenu,
-        onDismissFilterMenu = { showFilterMenu = false },
-        shareHolder = shareHolder
+        onDismissFilterMenu = { showFilterMenu = false }
     )
-}
-
-private class ShareHolder(
-    private val shareViewModel: ShareViewModel,
-    private val contactsViewModel: ContactsViewModel,
-    private val scope: CoroutineScope
-) {
-    var selectedProject by mutableStateOf<Project?>(null)
-        private set
-    var selectedContact by mutableStateOf<Contact?>(null)
-        private set
-    var contactMethods by mutableStateOf<List<ContactMethod>>(emptyList())
-        private set
-    var showContactSelector by mutableStateOf(false)
-        private set
-    var showConfirmation by mutableStateOf(false)
-        private set
-    var showNoPhoneError by mutableStateOf(false)
-        private set
-    var showUserNotFoundError by mutableStateOf(false)
-        private set
-
-    fun onProjectSelected(project: Project) {
-        selectedProject = project
-        showContactSelector = true
-    }
-
-    fun onContactSelected(contact: Contact) {
-        selectedContact = contact
-        showContactSelector = false
-        scope.launch {
-            contactMethods = runCatching {
-                contactsViewModel.getContactMethods(contact.id).first()
-            }.getOrDefault(emptyList())
-        }
-        showConfirmation = true
-    }
-
-    fun onNoPhoneError(contact: Contact) {
-        selectedContact = contact
-        showContactSelector = false
-        showNoPhoneError = true
-    }
-
-    fun onConfirm() {
-        val p = selectedProject ?: return
-        val c = selectedContact ?: return
-        shareViewModel.shareProjectWithContact(p.id, c, contactMethods)
-    }
-
-    fun onSuccess() {
-        showConfirmation = false
-        showContactSelector = false
-        selectedProject = null
-        selectedContact = null
-    }
-
-    fun onError(type: ShareErrorType) {
-        showConfirmation = false
-        when (type) {
-            ShareErrorType.NO_PHONE -> showNoPhoneError = true
-            ShareErrorType.USER_NOT_FOUND -> showUserNotFoundError = true
-            else -> Unit
-        }
-    }
-
-    fun onReset() {
-        shareViewModel.resetState()
-    }
-
-    fun onDismissUserNotFound() {
-        showUserNotFoundError = false
-        selectedContact = null
-        showContactSelector = true
-    }
-
-    fun onDismissNoPhone() {
-        showNoPhoneError = false
-        selectedContact = null
-        showContactSelector = true
-    }
-
-    fun onDismissContactSelector() {
-        showContactSelector = false
-        selectedProject = null
-    }
-
-    fun onDismissConfirmation() {
-        showConfirmation = false
-        selectedContact = null
-        showContactSelector = true
-    }
-}
-
-@Composable
-private fun rememberShareHolder(
-    shareViewModel: ShareViewModel,
-    contactsViewModel: ContactsViewModel
-): ShareHolder {
-    val scope = rememberCoroutineScope()
-    return remember(shareViewModel, contactsViewModel) {
-        ShareHolder(shareViewModel, contactsViewModel, scope)
-    }
 }
 
 private data class ObjectsContentData(
@@ -380,7 +238,6 @@ private data class ObjectsContentCallbacks(
     val onEditObject: (ObjectModel) -> Unit,
     val onDeleteObject: (ObjectModel) -> Unit,
     val onDeleteProject: (Project) -> Unit,
-    val onShareProject: (Project) -> Unit,
     val onNavigateToObject: (ObjectModel) -> Unit,
     val onViewProject: (Project) -> Unit,
     val onEditProject: (Project) -> Unit,
@@ -467,7 +324,7 @@ private fun ObjectsContent(
     data: ObjectsContentData,
     callbacks: ObjectsContentCallbacks
 ) {
-    val isEmpty = !data.selectionMode &&
+    val isEmptyRoot = !data.selectionMode &&
             data.objects.isEmpty() &&
             data.projectsInObject.isEmpty() &&
             data.rootLevelProjects.isEmpty() &&
@@ -546,12 +403,28 @@ private fun ObjectsContent(
                     ProjectCard(
                         project = project,
                         onClick = { callbacks.onViewProject(project) },
-                        onShare = { callbacks.onShareProject(project) },
                         onEdit = { callbacks.onEditProject(project) },
                         onMove = { callbacks.onMoveProject(project, data.parentObjectId) },
                         onDelete = { callbacks.onDeleteProject(project) }
                     )
                 }
+            }
+        }
+
+        if (data.parentObjectId != null &&
+            data.projectsInObject.isEmpty() &&
+            !isNoResults
+        ) {
+            item(key = "empty_projects_in_object") {
+                EmptyState(
+                    icon = Icons.Default.Folder,
+                    title = "Нет объектов и смет",
+                    subtitle = if (data.selectionMode) {
+                        "В этом объекте нет смет"
+                    } else {
+                        "Для создания нажмите +"
+                    }
+                )
             }
         }
 
@@ -570,7 +443,6 @@ private fun ObjectsContent(
                     ProjectCard(
                         project = project,
                         onClick = { callbacks.onViewProject(project) },
-                        onShare = { callbacks.onShareProject(project) },
                         onEdit = { callbacks.onEditProject(project) },
                         onMove = { callbacks.onMoveProject(project, null) },
                         onDelete = { callbacks.onDeleteProject(project) }
@@ -579,15 +451,16 @@ private fun ObjectsContent(
             }
         }
 
-        if (isEmpty) {
+        if (isEmptyRoot) {
             item(key = "empty_state") {
                 EmptyState(
                     icon = Icons.Default.Folder,
                     title = "Нет объектов и смет",
-                    subtitle = "нажмите + чтобы создать"
+                    subtitle = "Для создания нажмите +"
                 )
             }
         }
+
         if (isNoResults) {
             item(key = "no_results") {
                 EmptyState(
@@ -615,8 +488,7 @@ private fun ObjectsDialogs(
     selectionMode: Boolean,
     parentObjectId: String?,
     showFilterMenu: Boolean,
-    onDismissFilterMenu: () -> Unit,
-    shareHolder: ShareHolder
+    onDismissFilterMenu: () -> Unit
 ) {
     val currentFilter by viewModel.currentFilter.collectAsStateWithLifecycle()
     val showCreateDialog by viewModel.showCreateDialog.collectAsStateWithLifecycle()
@@ -703,53 +575,6 @@ private fun ObjectsDialogs(
             message = "Вы уверены, что хотите удалить смету \"${projectToDelete!!.name}\"? Все материалы и работы будут удалены безвозвратно.",
             onConfirm = viewModel::confirmDeleteProject,
             onDismiss = viewModel::hideDeleteProjectConfirmation
-        )
-    }
-
-    ShareDialogs(holder = shareHolder)
-}
-
-@Composable
-private fun ShareDialogs(holder: ShareHolder) {
-    val project = holder.selectedProject
-    val contact = holder.selectedContact
-
-    if (holder.showContactSelector && project != null) {
-        ContactSelectorDialog(
-            config = ContactSelectorConfig(
-                title = "Выберите контакт",
-                requirePhone = true
-            ),
-            onDismiss = holder::onDismissContactSelector,
-            onSelect = holder::onContactSelected,
-            onNoPhoneError = holder::onNoPhoneError
-        )
-    }
-
-    if (holder.showConfirmation && project != null && contact != null) {
-        ShareConfirmationDialog(
-            contact = contact,
-            projectName = project.name,
-            onDismiss = holder::onDismissConfirmation,
-            onConfirm = holder::onConfirm
-        )
-    }
-
-    if (holder.showNoPhoneError) {
-        NoPhoneErrorDialog(
-            contactName = contact?.name ?: "контакта",
-            onDismiss = holder::onDismissNoPhone
-        )
-    }
-
-    if (holder.showUserNotFoundError) {
-        val phoneNumber = holder.contactMethods
-            .find { it.methodType.contains("телефон", ignoreCase = true) }
-            ?.value ?: "неизвестный номер"
-
-        UserNotFoundErrorDialog(
-            phoneNumber = phoneNumber,
-            onDismiss = holder::onDismissUserNotFound
         )
     }
 }

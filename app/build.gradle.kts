@@ -1,6 +1,6 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")  // ← ДОБАВИТЬ ВЕРСИЮ
+    id("org.jetbrains.kotlin.android")
     id("kotlin-kapt")
     id("com.google.dagger.hilt.android")
     id("org.jetbrains.kotlin.plugin.serialization")
@@ -10,22 +10,23 @@ android {
 
 
     namespace = "com.example.myapplication"
-    compileSdk = 35  // ← ИЗМЕНИТЬ НА 35
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.example.myapplication"
         minSdk = 24
-        targetSdk = 35  // ← ИЗМЕНИТЬ НА 35
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // ✅ Базовый URL для HTTP-запросов (Retrofit)
-        buildConfigField("String", "BASE_URL", "\"http://192.168.43.150:8080/\"")
+//        buildConfigField("String", "BASE_URL", "\"https://triumphantly-permissive-goby.cloudpub.ru/\"")
+//
+//        buildConfigField("String", "WS_BASE_URL", "\"https://triumphantly-permissive-goby.cloudpub.ru\"")
 
-        // ✅ Базовый URL для WebSocket (без query-параметров)
-        buildConfigField("String", "WS_BASE_URL", "\"ws://192.168.43.150:8080/ws/estimates\"")
+        buildConfigField("String", "BASE_URL", "\"http://192.168.0.109:8080/\"")
+        buildConfigField("String", "WS_BASE_URL", "\"ws://192.168.0.109:8080/ws/estimates\"")
     }
 
     buildTypes {
@@ -58,15 +59,13 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"  // ← ОБНОВЛЕНО
+        kotlinCompilerExtensionVersion = "1.5.14"
     }
 }
 
 dependencies {
-    // Compose BOM
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
 
-    // Compose
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
@@ -74,45 +73,36 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.foundation:foundation")
 
-    // Accompanist
     implementation("com.google.accompanist:accompanist-swiperefresh:0.35.0-alpha")
     implementation("com.google.accompanist:accompanist-permissions:0.35.0-alpha")
 
-    // Network
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
     implementation("com.google.code.gson:gson:2.10.1")
 
-    // Lifecycle
-    implementation("androidx.core:core-ktx:1.13.1")  // ← ОБНОВЛЕНО
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")  // ← ОБНОВЛЕНО
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")  // ← ОБНОВЛЕНО
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")  // ← ОБНОВЛЕНО
-    implementation("androidx.activity:activity-compose:1.9.2")  // ← ОБНОВЛЕНО
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
+    implementation("androidx.activity:activity-compose:1.9.2")
 
-    // Navigation
-    implementation("androidx.navigation:navigation-compose:2.7.7")  // ← ОБНОВЛЕНО
+    implementation("androidx.navigation:navigation-compose:2.7.7")
 
-    // Room
-    implementation("androidx.room:room-runtime:2.6.1")  // ← ОБНОВЛЕНО
-    implementation("androidx.room:room-ktx:2.6.1")  // ← ОБНОВЛЕНО
-    // ❌ УДАЛИТЬ: implementation(libs.androidx.compose.foundation)
-    kapt("androidx.room:room-compiler:2.6.1")  // ← ОБНОВЛЕНО
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    kapt("androidx.room:room-compiler:2.6.1")
 
-    // Hilt
     implementation("com.google.dagger:hilt-android:2.51.1")
     kapt("com.google.dagger:hilt-compiler:2.51.1")
-    implementation("androidx.hilt:hilt-navigation-compose:1.2.0")  // ← ОБНОВЛЕНО
+    implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
-    // Utils
-    implementation("androidx.datastore:datastore-preferences:1.1.1")  // ← ОБНОВЛЕНО
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("com.itextpdf:itext7-core:7.2.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.apache.commons:commons-text:1.11.0")
 
-    // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")

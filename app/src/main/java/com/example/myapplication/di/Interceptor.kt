@@ -13,12 +13,17 @@ class AuthInterceptor @Inject constructor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val userId = userPreferences.getUserId()
+        val deviceId = userPreferences.getDeviceId()
 
         val request = chain.request().newBuilder()
             .apply {
                 removeHeader("X-User-Id")
+                removeHeader("X-Device-Id")
                 if (!userId.isNullOrEmpty()) {
                     addHeader("X-User-Id", userId)
+                }
+                if (!deviceId.isNullOrEmpty()) {
+                    addHeader("X-Device-Id", deviceId)
                 }
             }
             .build()

@@ -1,6 +1,7 @@
 package com.example.myapplication.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -60,10 +62,15 @@ import com.example.myapplication.data.models.ContactMethod
 import com.example.myapplication.ui.theme.components.ContactDetailsDialog
 import com.example.myapplication.ui.theme.getFilterDisplayName
 import com.example.myapplication.ui.theme.getFilterIcon
+import com.example.myapplication.viewmodels.ContactCheckResult
 import com.example.myapplication.viewmodels.ContactsViewModel
 import com.example.myapplication.viewmodels.SearchFilter
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+
+private const val SNACKBAR_VISIBLE_MS = 3_000L
 
 data class ContactSelectorConfig(
     val title: String = "Выберите контакт",
@@ -73,7 +80,19 @@ data class ContactSelectorConfig(
     val showInfo: Boolean = false,
     val showDuplicates: Boolean = false,
     val requirePhone: Boolean = false,
-    val showCancelButton: Boolean = true
+    val showCancelButton: Boolean = true,
+
+    val validateContact: (suspend (Contact) -> ContactCheckResult)? = null,
+
+    val validationMessage: (Contact, ContactCheckResult) -> String = { contact, result ->
+        when (result) {
+            is ContactCheckResult.NotRegistered ->
+                "«${contact.name}» не зарегистрирован в приложении. " +
+                        "Попросите его установить приложение и войти."
+            is ContactCheckResult.Error -> result.message
+            is ContactCheckResult.Exists -> ""
+        }
+    }
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -97,19 +116,54 @@ fun ContactSelectorDialog(
 
     val scope = rememberCoroutineScope()
 
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    val snackbarTimerJob = remember { mutableStateOf<Job?>(null) }
+
     var contactDetailsMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
     var editMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
 
+    val showTimedSnackbar: (String) -> Unit = remember(snackbarHostState) {
+        { message ->
+            snackbarTimerJob.value?.cancel()
+
+            snackbarTimerJob.value = scope.launch {
+                snackbarHostState.currentSnackbarData?.dismiss()
+
+                val showJob = launch {
+                    snackbarHostState.showSnackbar(
+                        message = message,
+                        withDismissAction = false
+                    )
+                }
+
+                delay(SNACKBAR_VISIBLE_MS)
+                snackbarHostState.currentSnackbarData?.dismiss()
+                showJob.cancel()
+            }
+        }
+    }
+
     LaunchedEffect(selectedContactForInfo?.id) {
-        contactDetailsMethods = selectedContactForInfo?.let {
-            loadMethods(viewModel, it.id)
-        } ?: emptyList()
+        val contactId = selectedContactForInfo?.id
+        if (contactId == null) {
+            contactDetailsMethods = emptyList()
+            return@LaunchedEffect
+        }
+        viewModel.getContactMethods(contactId).collect { methods ->
+            contactDetailsMethods = methods
+        }
     }
 
     LaunchedEffect(editingContact?.id) {
-        editMethods = editingContact?.let {
-            loadMethods(viewModel, it.id)
-        } ?: emptyList()
+        val contactId = editingContact?.id
+        if (contactId == null) {
+            editMethods = emptyList()
+            return@LaunchedEffect
+        }
+        viewModel.getContactMethods(contactId).collect { methods ->
+            editMethods = methods
+        }
     }
 
     Dialog(
@@ -119,99 +173,143 @@ fun ContactSelectorDialog(
             decorFitsSystemWindows = false
         )
     ) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.9f)
-                .padding(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                SelectorTopBar(
-                    config = config,
-                    isSearchActive = isSearchActive,
-                    searchQuery = searchQuery,
-                    currentFilter = currentFilter,
-                    onSearchToggle = { isSearchActive = it },
-                    onSearchQueryChange = viewModel::updateSearchQuery,
-                    onClearSearch = viewModel::clearSearch,
-                    onFilterClick = { showFilterMenu = true },
-                    onDismiss = onDismiss
-                )
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() }
+                    ) {
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                    }
+            )
 
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(filteredContacts, key = { "${it.id}_$duplicatesVersion" }) { contact ->
-                        SelectableContactCard(
-                            contact = contact,
-                            config = config,
-                            onClick = {
-                                if (config.requirePhone) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.9f)
+                    .padding(16.dp)
+                    .align(Alignment.Center),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    SelectorTopBar(
+                        config = config,
+                        isSearchActive = isSearchActive,
+                        searchQuery = searchQuery,
+                        currentFilter = currentFilter,
+                        onSearchToggle = { isSearchActive = it },
+                        onSearchQueryChange = viewModel::updateSearchQuery,
+                        onClearSearch = viewModel::clearSearch,
+                        onFilterClick = { showFilterMenu = true },
+                        onDismiss = onDismiss
+                    )
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(filteredContacts, key = { "${it.id}_$duplicatesVersion" }) { contact ->
+                            SelectableContactCard(
+                                contact = contact,
+                                config = config,
+                                onClick = {
                                     scope.launch {
-                                        val methods = viewModel.getContactMethods(contact.id).first()
-                                        val hasPhone = methods.any { it.isPhoneMethod() }
-                                        if (hasPhone) {
-                                            onSelect(contact)
-                                        } else {
-                                            onNoPhoneError?.invoke(contact)
+                                        if (config.requirePhone) {
+                                            val methods = viewModel.getContactMethods(contact.id).first()
+                                            val hasPhone = methods.any { it.isPhoneMethod() }
+                                            if (!hasPhone) {
+                                                showTimedSnackbar("У контакта нет номера телефона")
+                                                onNoPhoneError?.invoke(contact)
+                                                return@launch
+                                            }
+                                        }
+
+                                        if (config.validateContact != null) {
+                                            val result = try {
+                                                config.validateContact.invoke(contact)
+                                            } catch (e: Exception) {
+                                                ContactCheckResult.Error(
+                                                    "Ошибка проверки: ${e.message}"
+                                                )
+                                            }
+
+                                            if (result !is ContactCheckResult.Exists) {
+                                                showTimedSnackbar(
+                                                    config.validationMessage(contact, result)
+                                                )
+                                                return@launch
+                                            }
+                                        }
+
+                                        onSelect(contact)
+                                    }
+                                },
+                                onEdit = if (config.showEdit) {
+                                    { editingContact = contact }
+                                } else null,
+                                onInfo = if (config.showInfo) {
+                                    { selectedContactForInfo = contact }
+                                } else null,
+                                onDuplicateClick = if (config.showDuplicates) {
+                                    {
+                                        viewModel.getDuplicateContacts(contact.id).firstOrNull()?.let { dupId ->
+                                            viewModel.contacts.value.find { it.id == dupId }?.let {
+                                                selectedContactForInfo = it
+                                            }
                                         }
                                     }
-                                } else {
-                                    onSelect(contact)
-                                }
-                            },
-                            onEdit = if (config.showEdit) {
-                                { editingContact = contact }
-                            } else null,
-                            onInfo = if (config.showInfo) {
-                                { selectedContactForInfo = contact }
-                            } else null,
-                            onDuplicateClick = if (config.showDuplicates) {
-                                {
-                                    viewModel.getDuplicateContacts(contact.id).firstOrNull()?.let { dupId ->
-                                        viewModel.contacts.value.find { it.id == dupId }?.let {
-                                            selectedContactForInfo = it
-                                        }
-                                    }
-                                }
-                            } else null,
-                            hasDuplicate = config.showDuplicates && viewModel.hasDuplicates(contact.id)
-                        )
+                                } else null,
+                                hasDuplicate = config.showDuplicates && viewModel.hasDuplicates(contact.id)
+                            )
+                        }
+
+                        if (filteredContacts.isEmpty()) {
+                            item {
+                                EmptyState(
+                                    icon = if (searchQuery.isNotBlank()) Icons.Default.SearchOff
+                                    else Icons.Default.Person,
+                                    title = if (searchQuery.isNotBlank()) "Ничего не найдено"
+                                    else "Нет контактов",
+                                    subtitle = if (searchQuery.isNotBlank()) "По запросу \"$searchQuery\""
+                                    else "Добавьте контакты в разделе Контакты"
+                                )
+                            }
+                        }
                     }
 
-                    if (filteredContacts.isEmpty()) {
-                        item {
-                            EmptyState(
-                                icon = if (searchQuery.isNotBlank()) Icons.Default.SearchOff
-                                else Icons.Default.Person,
-                                title = if (searchQuery.isNotBlank()) "Ничего не найдено"
-                                else "Нет контактов",
-                                subtitle = if (searchQuery.isNotBlank()) "По запросу \"$searchQuery\""
-                                else "Добавьте контакты в разделе Контакты"
+                    if (config.showCancelButton) {
+                        Button(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondary
                             )
+                        ) {
+                            Text("Отмена")
                         }
                     }
                 }
-
-                if (config.showCancelButton) {
-                    Button(
-                        onClick = onDismiss,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.secondary
-                        )
-                    ) {
-                        Text("Отмена")
-                    }
-                }
             }
+
+            CustomSnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 16.dp)
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() }
+                    ) {
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                    }
+            )
         }
     }
 
@@ -407,17 +505,6 @@ private fun SelectableContactCard(
                 }
             }
         }
-    }
-}
-
-private suspend fun loadMethods(
-    viewModel: ContactsViewModel,
-    contactId: String
-): List<ContactMethod> {
-    return try {
-        viewModel.getContactMethods(contactId).first()
-    } catch (e: Exception) {
-        emptyList()
     }
 }
 

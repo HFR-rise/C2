@@ -1,5 +1,6 @@
 package com.example.estimateserver.config;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import org.springframework.context.annotation.Bean;
@@ -15,6 +16,8 @@ public class JacksonConfig {
     @Primary
     public ObjectMapper objectMapper() {
         ObjectMapper mapper = new ObjectMapper();
+
+        mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
         SimpleModule module = new SimpleModule();
         module.addDeserializer(Date.class, new CustomDateDeserializer());

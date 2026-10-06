@@ -35,6 +35,9 @@ class ContactRepository @Inject constructor(
     fun getContactMethods(contactId: String): Flow<List<ContactMethod>> =
         contactMethodDao.getContactMethods(contactId)
 
+    suspend fun getAllContactsOnce(): List<Contact> =
+        contactDao.getAllContactsOnce()
+
     suspend fun getContactMethodsOnce(contactId: String): List<ContactMethod> =
         contactMethodDao.getContactMethodsOnce(contactId)
 
@@ -45,50 +48,39 @@ class ContactRepository @Inject constructor(
 
     suspend fun addContact(contact: Contact): String {
         val contactWithId = ensureId(contact)
+        val withPending = contactWithId.copy(needsSync = true)
 
-        contactDao.insertContact(contactWithId)
-        Log.d(TAG, "Contact saved locally: ${contactWithId.id}")
+        contactDao.insertContact(withPending)
+        Log.d(TAG, "Contact saved locally (pending sync): ${withPending.id}")
 
-        syncToServer(
-            operation = "CREATE",
-            entityType = "CONTACT",
-            entity = contactWithId,
-            call = { apiService.createContact(it) },
-            onSuccess = { serverContact -> contactDao.updateContact(serverContact) }
-        )
+        return withPending.id
+    }
 
-        return contactWithId.id
+    suspend fun updateContact(contact: Contact) {
+        contactDao.updateContact(contact.copy(needsSync = true))
+        Log.d(TAG, "Contact updated (pending sync): ${contact.id}")
     }
 
     suspend fun addContactMethod(method: ContactMethod): String {
         val methodWithId = ensureId(method)
 
         contactMethodDao.insertContactMethod(methodWithId)
-        Log.d(TAG, "ContactMethod saved locally: ${methodWithId.id}")
+        contactDao.markAsPending(methodWithId.contactId)
 
-        syncToServer(
-            operation = "CREATE",
-            entityType = "CONTACT_METHOD",
-            entity = methodWithId,
-            call = { apiService.addContactMethod(it) }
-        )
-
+        Log.d(TAG, "ContactMethod saved (parent pending): ${methodWithId.id}")
         return methodWithId.id
-    }
-
-    suspend fun updateContact(contact: Contact) {
-        contactDao.updateContact(contact)
-
-        syncToServer(
-            operation = "UPDATE",
-            entityType = "CONTACT",
-            entity = contact,
-            call = { apiService.updateContact(it.id, it) }
-        )
     }
 
     suspend fun updateContactMethod(method: ContactMethod) {
         contactMethodDao.updateContactMethod(method)
+        contactDao.markAsPending(method.contactId)
+        Log.d(TAG, "ContactMethod updated (parent pending): ${method.id}")
+    }
+
+    suspend fun deleteContactMethod(method: ContactMethod) {
+        contactMethodDao.deleteContactMethod(method)
+        contactDao.markAsPending(method.contactId)
+        Log.d(TAG, "ContactMethod deleted (parent pending): ${method.id}")
     }
 
     suspend fun deleteContact(contact: Contact) {
@@ -102,13 +94,27 @@ class ContactRepository @Inject constructor(
         )
     }
 
-    suspend fun deleteContactMethod(method: ContactMethod) {
-        contactMethodDao.deleteContactMethod(method)
-    }
-
     suspend fun deleteAllContacts() {
         contactDao.deleteAll()
         contactMethodDao.deleteAll()
+    }
+
+    suspend fun getPendingContacts(): List<Contact> =
+        contactDao.getPendingContacts()
+
+    suspend fun getPendingCount(): Int =
+        contactDao.getPendingCount()
+
+    suspend fun markAsSynced(contactId: String) {
+        contactDao.markAsSynced(contactId)
+    }
+
+    suspend fun markAsPending(contactId: String) {
+        contactDao.markAsPending(contactId)
+    }
+
+    suspend fun upsertContact(contact: Contact) {
+        contactDao.upsertContact(contact.copy(description = contact.description ?: ""))
     }
 
     private fun <T : Any> ensureId(entity: T): T = when (entity) {

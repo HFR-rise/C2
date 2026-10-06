@@ -45,6 +45,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -55,17 +56,21 @@ import androidx.navigation.navArgument
 import com.example.myapplication.services.SyncManager
 import com.example.myapplication.services.WebSocketService
 import com.example.myapplication.ui.theme.AuthScreen
+import com.example.myapplication.ui.theme.CommunicationScreen
 import com.example.myapplication.ui.theme.ContactsScreen
 import com.example.myapplication.ui.theme.CreateProjectScreen
+import com.example.myapplication.ui.theme.EditEstimateDraftScreen
 import com.example.myapplication.ui.theme.FinanceAppTheme
 import com.example.myapplication.ui.theme.MoveProjectWrapper
 import com.example.myapplication.ui.theme.ObjectsScreen
-import com.example.myapplication.ui.theme.PendingSharesScreen
 import com.example.myapplication.ui.theme.ProfileScreen
+import com.example.myapplication.ui.theme.ProjectMembersScreen
 import com.example.myapplication.ui.theme.ProjectScreenMode
 import com.example.myapplication.utils.UserPreferences
 import com.example.myapplication.viewmodels.AuthViewModel
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 object Routes {
@@ -74,11 +79,13 @@ object Routes {
     const val OBJECTS_WITH_PARENT = "objects/{parentId}"
     const val MOVE_PROJECT = "move_project/{projectId}/{currentObjectId}"
     const val CONTACTS = "contacts"
-    const val MATERIALS_STORAGE = "materials_storage"
+    const val EDIT_DRAFT = "edit_draft/{projectId}"
+    const val COMMUNICATION = "communication"
     const val PROFILE = "profile"
     const val VIEW_PROJECT = "view_project/{projectId}"
     const val CREATE_PROJECT = "create_project/{objectId}"
     const val EDIT_PROJECT = "edit_project/{projectId}"
+    const val PROJECT_MEMBERS = "project_members/{projectId}"
 }
 
 private const val TAG = "MainActivity"
@@ -92,6 +99,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d(TAG, "onCreate")
+
         setContent {
             FinanceAppTheme {
                 Surface(
@@ -105,6 +114,44 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Log.d(TAG, "onResume")
+
+        val userId = userPreferences.getUserId()
+        val isLoggedIn = userPreferences.isLoggedIn()
+
+        if (userId.isNullOrEmpty() || !isLoggedIn) {
+            Log.d(TAG, "onResume: not logged in, skipping sync")
+            return
+        }
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                if (syncManager.hasInternetConnection()) {
+                    Log.d(TAG, "onResume: triggering sync for user=$userId")
+                    syncManager.syncDataFromServer(userId, skipQueueCheck = false)
+                } else {
+                    Log.d(TAG, "onResume: no internet, skipping sync")
+                }
+
+                if (!webSocketService.isConnected()) {
+                    Log.d(TAG, "onResume: WS not connected, connecting")
+                    webSocketService.connect(userId)
+                } else {
+                    Log.d(TAG, "onResume: WS already connected")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "onResume: sync/reconnect failed: ${e.message}", e)
+            }
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        Log.d(TAG, "onPause")
     }
 }
 
@@ -126,6 +173,7 @@ fun MainScreen(
 
     LaunchedEffect(isLoggedIn) {
         val target = if (isLoggedIn) Routes.OBJECTS_ROOT else Routes.AUTH
+        Log.d(TAG, "Navigation by isLoggedIn=$isLoggedIn → $target")
         navController.navigate(target) {
             popUpTo(0) { inclusive = true }
             launchSingleTop = true
@@ -164,7 +212,7 @@ private fun resolveLastSelectedRoute(route: String?): String = when {
     route == null -> Routes.OBJECTS_ROOT
     route == Routes.OBJECTS_ROOT || route.startsWith("objects/") -> Routes.OBJECTS_ROOT
     route == Routes.CONTACTS -> Routes.CONTACTS
-    route == Routes.MATERIALS_STORAGE -> Routes.MATERIALS_STORAGE
+    route == Routes.COMMUNICATION -> Routes.COMMUNICATION
     route == Routes.PROFILE -> Routes.PROFILE
     else -> Routes.OBJECTS_ROOT
 }
@@ -236,7 +284,9 @@ private fun shouldShowBottomBar(currentRoute: String?, isLoggedIn: Boolean): Boo
         "move_project/",
         "create_project",
         "edit_project/",
-        "view_project/"
+        "view_project/",
+        "edit_draft/",
+        "project_members/"
     )
     return hiddenRoutes.none { currentRoute.startsWith(it) }
 }
@@ -288,6 +338,24 @@ private fun AppNavHost(
         startDestination = startDestination,
         modifier = modifier
     ) {
+        composable(
+            route = Routes.EDIT_DRAFT,
+            arguments = listOf(navArgument("projectId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            EditEstimateDraftScreen(navController = navController)
+        }
+
+        composable(Routes.COMMUNICATION) {
+            CommunicationScreen(navController = navController)
+        }
+
+        composable(
+            route = Routes.PROJECT_MEMBERS,
+            arguments = listOf(navArgument("projectId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            ProjectMembersScreen(navController = navController)
+        }
+
         composable(Routes.AUTH) {
             AuthScreen(
                 navController = navController,
@@ -332,10 +400,6 @@ private fun AppNavHost(
 
         composable(Routes.CONTACTS) {
             ContactsScreen(navController)
-        }
-
-        composable(Routes.MATERIALS_STORAGE) {
-            PendingSharesScreen(navController)
         }
 
         composable(Routes.PROFILE) {
@@ -395,7 +459,7 @@ object BottomNavItems {
     val items = listOf(
         BottomNavItem("Объекты", Icons.Default.Folder, Routes.OBJECTS_ROOT, Icons.Default.Folder),
         BottomNavItem("Контакты", Icons.Default.Contacts, Routes.CONTACTS, Icons.Default.Contacts),
-        BottomNavItem("Общение", Icons.Default.Chat, Routes.MATERIALS_STORAGE, Icons.Default.Chat),
+        BottomNavItem("Событие", Icons.Default.Chat, Routes.COMMUNICATION, Icons.Default.Chat),
         BottomNavItem("Профиль", Icons.Default.Person, Routes.PROFILE, Icons.Default.Person)
     )
 }

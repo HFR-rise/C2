@@ -29,10 +29,12 @@ public class WebSocketService {
     private static final long STARTUP_FINALIZE_DELAY_MS = 5_000L;
     private static final long UNRESPONSIVE_CLOSE_DELAY_MS = 5_000L;
 
-    private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
-    private final Map<String, String> sessionToUser = new ConcurrentHashMap<>();
+    private final Map<String, List<SyncMessage>> offlineMessagesByUser = new ConcurrentHashMap<>();
 
     private final Map<String, List<SyncMessage>> offlineMessages = new ConcurrentHashMap<>();
+
+    private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+    private final Map<String, String> sessionToUser = new ConcurrentHashMap<>();
 
     private final Map<String, ReentrantLock> userLocks = new ConcurrentHashMap<>();
 
@@ -90,26 +92,38 @@ public class WebSocketService {
             String deviceId = getDeviceIdFromSession(session);
             saveSessionToDatabase(userId, session.getId(), deviceId);
 
+            List<SyncMessage> pendingByUser = offlineMessagesByUser.remove(userId);
+            if (pendingByUser != null && !pendingByUser.isEmpty()) {
+                log.debug("Sending {} user-scoped pending messages to user={}",
+                        pendingByUser.size(), userId);
+                for (SyncMessage msg : pendingByUser) {
+                    trySend(session, userId, msg);
+                }
+            }
+
             List<SyncMessage> pending = offlineMessages.remove(offlineKey(userId, deviceId));
             if (pending != null && !pending.isEmpty()) {
-                log.debug("Sending {} pending messages to user={} device={}",
+                log.debug("Sending {} device-scoped pending messages to user={} device={}",
                         pending.size(), userId, deviceId);
                 for (SyncMessage msg : pending) {
-                    try {
-                        String json = objectMapper.writeValueAsString(msg);
-                        synchronized (session) {
-                            session.sendMessage(new TextMessage(json));
-                        }
-                    } catch (IOException e) {
-                        log.warn("Failed to send pending message to user={}: {}",
-                                userId, e.getMessage());
-                    }
+                    trySend(session, userId, msg);
                 }
             }
 
             log.info("User {} connected (total sessions: {})", userId, sessions.size());
         } finally {
             lock.unlock();
+        }
+    }
+
+    private void trySend(WebSocketSession session, String userId, SyncMessage msg) {
+        try {
+            String json = objectMapper.writeValueAsString(msg);
+            synchronized (session) {
+                session.sendMessage(new TextMessage(json));
+            }
+        } catch (IOException e) {
+            log.warn("Failed to send pending message to user={}: {}", userId, e.getMessage());
         }
     }
 
@@ -173,24 +187,29 @@ public class WebSocketService {
         }
     }
 
-    @Deprecated
-    public void sendToUser(String userId, SyncMessage message) {
+    public void sendToUserOrQueue(String userId, SyncMessage message) {
         if (message == null || userId == null) return;
 
         WebSocketSession session = sessions.get(userId);
-        if (session == null || !session.isOpen()) {
-            log.warn("sendToUser (no deviceId): user={} offline, message dropped", userId);
+        if (session != null && session.isOpen()) {
+            sendToUser(userId, null, message);
             return;
         }
 
-        try {
-            String json = objectMapper.writeValueAsString(message);
-            synchronized (session) {
-                session.sendMessage(new TextMessage(json));
-            }
-        } catch (IOException e) {
-            log.warn("Send failed to user={}: {}", userId, e.getMessage());
+        String deviceId = getDeviceIdForUser(userId);
+        saveOfflineMessage(userId, deviceId, message);
+    }
+
+    public void queueOfflineMessageForUser(String userId, SyncMessage message) {
+        if (userId == null || message == null) return;
+
+        List<SyncMessage> list = offlineMessagesByUser.computeIfAbsent(
+                userId, k -> new CopyOnWriteArrayList<>());
+        list.add(message);
+        while (list.size() > MAX_OFFLINE_MESSAGES_PER_USER) {
+            list.remove(0);
         }
+        log.debug("Queued offline message for user={}, type={}", userId, message.getType());
     }
 
     public boolean hasSession(String userId) {
@@ -311,6 +330,7 @@ public class WebSocketService {
         sessions.clear();
         sessionToUser.clear();
         offlineMessages.clear();
+        offlineMessagesByUser.clear();
         userLocks.clear();
     }
 
@@ -318,6 +338,14 @@ public class WebSocketService {
     public void cleanupStaleLocks() {
         userLocks.entrySet().removeIf(entry ->
                 !sessions.containsKey(entry.getKey()) && !entry.getValue().isLocked());
+
+        long cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000;
+        offlineMessagesByUser.entrySet().removeIf(entry -> {
+            List<SyncMessage> list = entry.getValue();
+            return list.isEmpty()
+                    || (list.get(list.size() - 1).getTimestamp() != null
+                    && list.get(list.size() - 1).getTimestamp().getTime() < cutoff);
+        });
     }
 
     @Scheduled(fixedDelay = 30_000)
@@ -360,13 +388,16 @@ public class WebSocketService {
     }
 
     public void queueForceLogoutForOfflineUser(String userId, String deviceId) {
+        SyncMessage msg = new SyncMessage(
+                "FORCE_LOGOUT", "SESSION", null, null,
+                userId, new Date(), null);
+
         if (deviceId == null || deviceId.isEmpty()) {
-            log.warn("queueForceLogoutForOfflineUser: no deviceId, user={}", userId);
+            queueOfflineMessageForUser(userId, msg);
             return;
         }
-        saveOfflineMessage(userId, deviceId, new SyncMessage(
-                "FORCE_LOGOUT", "SESSION", null, null,
-                userId, new Date(), null));
+
+        saveOfflineMessage(userId, deviceId, msg);
     }
 
     public void updateSessionLastPong(String userId) {
@@ -412,9 +443,10 @@ public class WebSocketService {
 
     private void saveOfflineMessage(String userId, String deviceId, SyncMessage message) {
         if (deviceId == null || deviceId.isEmpty()) {
-            log.warn("saveOfflineMessage: no deviceId, message dropped for user={}", userId);
+            queueOfflineMessageForUser(userId, message);
             return;
         }
+
         String key = offlineKey(userId, deviceId);
         List<SyncMessage> list = offlineMessages.computeIfAbsent(
                 key, k -> new CopyOnWriteArrayList<>());
@@ -422,6 +454,8 @@ public class WebSocketService {
         while (list.size() > MAX_OFFLINE_MESSAGES_PER_USER) {
             list.remove(0);
         }
+        log.debug("Queued offline message for user={} device={}, type={}",
+                userId, deviceId, message.getType());
     }
 
     private void saveSessionToDatabase(String userId, String sessionId, String deviceId) {

@@ -10,16 +10,18 @@ import com.example.myapplication.utils.FuzzySearch
 import com.example.myapplication.utils.PhoneUtils
 import com.example.myapplication.utils.UserPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 enum class SearchFilter(val displayName: String) {
     BY_NAME("По имени"),
@@ -65,6 +67,7 @@ class ContactsViewModel @Inject constructor(
 
     init {
         loadContacts()
+        loadAllContactMethods()
     }
 
     val filteredContacts: StateFlow<List<Contact>> = combine(
@@ -190,18 +193,29 @@ class ContactsViewModel @Inject constructor(
 
     private fun loadContacts() {
         viewModelScope.launch {
-            repo.getAllContacts().collect { list ->
-                _contacts.value = list
-                loadAllContactMethods()
+            try {
+                repo.getAllContacts().collect { list ->
+                    _contacts.value = list
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "loadContacts: ${e.message}", e)
             }
         }
     }
 
     private fun loadAllContactMethods() {
         viewModelScope.launch {
-            repo.getAllContactMethods().collect { allMethods ->
-                _contactMethodsCache.value = allMethods.groupBy { it.contactId }
-                updateDuplicatesCache()
+            try {
+                repo.getAllContactMethods().collect { allMethods ->
+                    _contactMethodsCache.value = allMethods.groupBy { it.contactId }
+                    updateDuplicatesCache()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "loadAllContactMethods: ${e.message}", e)
             }
         }
     }
@@ -214,42 +228,57 @@ class ContactsViewModel @Inject constructor(
                 currentCache[contactId] = methods
                 _contactMethodsCache.value = currentCache
                 updateDuplicatesCache()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Error loading methods for $contactId: ${e.message}")
+                Log.e(TAG, "Error loading methods for $contactId: ${e.message}", e)
             }
         }
     }
 
     private fun updateDuplicatesCache() {
-        val methodsMap = _contactMethodsCache.value
-        val valueToContacts = mutableMapOf<String, MutableList<String>>()
+        viewModelScope.launch {
+            try {
+                val methodsMap = _contactMethodsCache.value
+                val contacts = _contacts.value
 
-        _contacts.value.forEach { contact ->
-            methodsMap[contact.id]?.forEach { method ->
-                val normalizedValue = if (isPhoneMethod(method)) {
-                    PhoneUtils.normalize(method.value)
-                } else {
-                    method.value.lowercase()
+                val duplicates = withContext(Dispatchers.Default) {
+                    val valueToContacts = mutableMapOf<String, MutableList<String>>()
+
+                    contacts.forEach { contact ->
+                        methodsMap[contact.id]?.forEach { method ->
+                            val normalizedValue = if (isPhoneMethod(method)) {
+                                PhoneUtils.normalize(method.value)
+                            } else {
+                                method.value.lowercase()
+                            }
+
+                            if (normalizedValue.isNotBlank()) {
+                                valueToContacts.getOrPut(normalizedValue) { mutableListOf() }.add(contact.id)
+                            }
+                        }
+                    }
+
+                    val result = mutableMapOf<String, MutableList<String>>()
+                    valueToContacts.filter { it.value.size > 1 }.forEach { (_, contactIds) ->
+                        contactIds.forEach { contactId ->
+                            val others = contactIds.filter { it != contactId }
+                            if (others.isNotEmpty()) {
+                                result.getOrPut(contactId) { mutableListOf() }.addAll(others)
+                            }
+                        }
+                    }
+                    result
                 }
 
-                if (normalizedValue.isNotBlank()) {
-                    valueToContacts.getOrPut(normalizedValue) { mutableListOf() }.add(contact.id)
-                }
+                _duplicatesCache.value = duplicates
+                _duplicatesVersion.value += 1
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "updateDuplicatesCache: ${e.message}", e)
             }
         }
-
-        val duplicates = mutableMapOf<String, MutableList<String>>()
-        valueToContacts.filter { it.value.size > 1 }.forEach { (_, contactIds) ->
-            contactIds.forEach { contactId ->
-                val others = contactIds.filter { it != contactId }
-                if (others.isNotEmpty()) {
-                    duplicates.getOrPut(contactId) { mutableListOf() }.addAll(others)
-                }
-            }
-        }
-
-        _duplicatesCache.value = duplicates
-        _duplicatesVersion.value += 1
     }
 
     fun hasDuplicates(contactId: String): Boolean =
@@ -306,11 +335,13 @@ class ContactsViewModel @Inject constructor(
                 contactId
             },
             onSuccess = { contactId ->
-                Log.d(TAG, "✅ Contact created: $contactId")
+                Log.d(TAG, "Contact created: $contactId")
+                loadMethodsForContact(contactId)
                 _showAddDialog.value = false
+                triggerSyncNow()
             },
             onError = { e ->
-                Log.e(TAG, "❌ Error creating contact: ${e.message}", e)
+                Log.e(TAG, "Error creating contact: ${e.message}", e)
                 setError("Ошибка: ${e.message}")
             }
         )
@@ -327,7 +358,10 @@ class ContactsViewModel @Inject constructor(
                 )
                 repo.addContactMethod(method)
             },
-            onSuccess = { loadMethodsForContact(contactId) },
+            onSuccess = {
+                loadMethodsForContact(contactId)
+                triggerSyncNow()
+            },
             onError = { e -> setError("Ошибка добавления способа связи: ${e.message}") }
         )
     }
@@ -335,7 +369,10 @@ class ContactsViewModel @Inject constructor(
     fun updateContactMethod(method: ContactMethod) {
         safeLaunch(
             block = { repo.updateContactMethod(method) },
-            onSuccess = { loadMethodsForContact(method.contactId) },
+            onSuccess = {
+                loadMethodsForContact(method.contactId)
+                triggerSyncNow()
+            },
             onError = { e -> setError("Ошибка обновления: ${e.message}") }
         )
     }
@@ -343,7 +380,10 @@ class ContactsViewModel @Inject constructor(
     fun deleteContactMethod(method: ContactMethod) {
         safeLaunch(
             block = { repo.deleteContactMethod(method) },
-            onSuccess = { loadMethodsForContact(method.contactId) },
+            onSuccess = {
+                loadMethodsForContact(method.contactId)
+                triggerSyncNow()
+            },
             onError = { e -> setError("Ошибка удаления: ${e.message}") }
         )
     }
@@ -351,7 +391,10 @@ class ContactsViewModel @Inject constructor(
     fun updateContact(contact: Contact) {
         safeLaunch(
             block = { repo.updateContact(contact) },
-            onSuccess = { _editingContact.value = null },
+            onSuccess = {
+                _editingContact.value = null
+                triggerSyncNow()
+            },
             onError = { e -> setError("Ошибка обновления: ${e.message}") }
         )
     }
@@ -364,6 +407,7 @@ class ContactsViewModel @Inject constructor(
                 currentCache.remove(contact.id)
                 _contactMethodsCache.value = currentCache
                 updateDuplicatesCache()
+                triggerSyncNow()
             },
             onError = { e -> setError("Ошибка удаления: ${e.message}") }
         )
@@ -398,15 +442,17 @@ class ContactsViewModel @Inject constructor(
 
                 if (syncManager.hasInternetConnection()) {
                     setRefreshing(true)
-                    Log.d(TAG, "Refreshing contacts from server")
-                    syncManager.syncDataFromServer(userId)
+                    Log.d(TAG, "Refreshing contacts: push pending + pull from server")
+                    syncManager.startPeriodicSync()
+
+                    syncManager.syncIfQueueIsEmpty(userId)
                 } else {
                     Log.d(TAG, "No internet, skipping refresh")
                 }
             },
             onSuccess = { setRefreshing(false) },
             onError = { e ->
-                Log.e(TAG, "Error refreshing: ${e.message}")
+                Log.e(TAG, "Error refreshing: ${e.message}", e)
                 setRefreshing(false)
             }
         )
@@ -414,5 +460,20 @@ class ContactsViewModel @Inject constructor(
 
     fun getContactMethods(contactId: String): Flow<List<ContactMethod>> {
         return repo.getContactMethods(contactId)
+    }
+
+    private fun triggerSyncNow() {
+        val userId = syncManager.currentUserId() ?: return
+        if (!syncManager.hasInternetConnection()) return
+
+        viewModelScope.launch {
+            try {
+                syncManager.syncIfQueueIsEmpty(userId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "triggerSyncNow failed: ${e.message}", e)
+            }
+        }
     }
 }

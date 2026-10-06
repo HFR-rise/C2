@@ -7,6 +7,7 @@ import com.example.myapplication.data.models.Material
 import com.example.myapplication.data.models.Project
 import com.example.myapplication.data.models.WorkItem
 import com.example.myapplication.data.repository.ProjectRepository
+import com.example.myapplication.services.SyncManager
 import com.example.myapplication.utils.FuzzySearch
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,10 +18,12 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 @HiltViewModel
 class ProjectDetailViewModel @Inject constructor(
     private val repo: ProjectRepository,
+    private val syncManager: SyncManager,
     savedStateHandle: SavedStateHandle
 ) : BaseViewModel() {
 
@@ -103,11 +106,14 @@ class ProjectDetailViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                _project.value = repo.getProjectById(projectId)
-                Log.d(TAG, "Project loaded: ${_project.value?.name}")
+                repo.getAllProjects()
+                    .collect { all ->
+                        _project.value = all.firstOrNull { it.id == projectId }
+                    }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Error loading project: ${e.message}")
-                setError("Ошибка загрузки проекта")
+                Log.e(TAG, "Error loading project: ${e.message}", e)
             }
         }
 
@@ -124,8 +130,10 @@ class ProjectDetailViewModel @Inject constructor(
                     setLoading(false)
                     Log.d(TAG, "Materials: ${materials.size}, WorkItems: ${workItems.size}")
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Error loading data: ${e.message}")
+                Log.e(TAG, "Error loading data: ${e.message}", e)
                 setError("Ошибка загрузки данных")
                 setLoading(false)
             }
@@ -177,10 +185,11 @@ class ProjectDetailViewModel @Inject constructor(
             onSuccess = {
                 _showMaterialDialog.value = false
                 Log.d(TAG, "Material added: $name")
+                triggerSyncNow()
             },
             onError = { e ->
                 setError("Ошибка добавления: ${e.message}")
-                Log.e(TAG, "Error adding material: ${e.message}")
+                Log.e(TAG, "Error adding material: ${e.message}", e)
             }
         )
     }
@@ -191,10 +200,11 @@ class ProjectDetailViewModel @Inject constructor(
             onSuccess = {
                 _editingMaterial.value = null
                 Log.d(TAG, "Material updated: ${material.name}")
+                triggerSyncNow()
             },
             onError = { e ->
                 setError("Ошибка обновления: ${e.message}")
-                Log.e(TAG, "Error updating material: ${e.message}")
+                Log.e(TAG, "Error updating material: ${e.message}", e)
             }
         )
     }
@@ -204,10 +214,11 @@ class ProjectDetailViewModel @Inject constructor(
             block = { repo.deleteMaterial(material) },
             onSuccess = {
                 Log.d(TAG, "Material deleted: ${material.name}")
+                triggerSyncNow()
             },
             onError = { e ->
                 setError("Ошибка удаления: ${e.message}")
-                Log.e(TAG, "Error deleting material: ${e.message}")
+                Log.e(TAG, "Error deleting material: ${e.message}", e)
             }
         )
     }
@@ -227,10 +238,11 @@ class ProjectDetailViewModel @Inject constructor(
             onSuccess = {
                 _showWorkDialog.value = false
                 Log.d(TAG, "Work item added: $name")
+                triggerSyncNow()
             },
             onError = { e ->
                 setError("Ошибка добавления: ${e.message}")
-                Log.e(TAG, "Error adding work item: ${e.message}")
+                Log.e(TAG, "Error adding work item: ${e.message}", e)
             }
         )
     }
@@ -241,10 +253,11 @@ class ProjectDetailViewModel @Inject constructor(
             onSuccess = {
                 _editingWorkItem.value = null
                 Log.d(TAG, "Work item updated: ${workItem.name}")
+                triggerSyncNow()
             },
             onError = { e ->
                 setError("Ошибка обновления: ${e.message}")
-                Log.e(TAG, "Error updating work item: ${e.message}")
+                Log.e(TAG, "Error updating work item: ${e.message}", e)
             }
         )
     }
@@ -254,11 +267,27 @@ class ProjectDetailViewModel @Inject constructor(
             block = { repo.deleteWorkItem(workItem) },
             onSuccess = {
                 Log.d(TAG, "Work item deleted: ${workItem.name}")
+                triggerSyncNow()
             },
             onError = { e ->
                 setError("Ошибка удаления: ${e.message}")
-                Log.e(TAG, "Error deleting work item: ${e.message}")
+                Log.e(TAG, "Error deleting work item: ${e.message}", e)
             }
         )
+    }
+
+    private fun triggerSyncNow() {
+        val uid = syncManager.currentUserId() ?: return
+        if (!syncManager.hasInternetConnection()) return
+
+        viewModelScope.launch {
+            try {
+                syncManager.syncIfQueueIsEmpty(uid)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "triggerSyncNow failed: ${e.message}", e)
+            }
+        }
     }
 }

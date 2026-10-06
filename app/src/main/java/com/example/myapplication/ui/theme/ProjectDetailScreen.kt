@@ -135,7 +135,7 @@ fun ProjectDetailScreen(
             items(filteredMaterials, key = { it.id }) { material ->
                 MaterialItem(
                     material = material,
-                    onClick = { viewModel.startEditMaterial(material) },
+                    onEdit = { viewModel.startEditMaterial(material) },
                     onDelete = { viewModel.deleteMaterial(material) }
                 )
             }
@@ -173,7 +173,7 @@ fun ProjectDetailScreen(
             items(filteredWorkItems, key = { it.id }) { work ->
                 WorkItemCard(
                     workItem = work,
-                    onClick = { viewModel.startEditWorkItem(work) },
+                    onEdit = { viewModel.startEditWorkItem(work) },
                     onDelete = { viewModel.deleteWorkItem(work) }
                 )
             }

@@ -50,4 +50,19 @@ interface ObjectDao {
 
     @Query("DELETE FROM objects")
     suspend fun deleteAll()
+
+    @Query("UPDATE objects SET needsSync = 1 WHERE id = :objectId")
+    suspend fun markAsPending(objectId: String)
+
+    @Query("UPDATE objects SET needsSync = 0 WHERE id = :objectId")
+    suspend fun markAsSynced(objectId: String)
+
+    @Query("SELECT * FROM objects WHERE needsSync = 1")
+    suspend fun getPendingObjects(): List<ObjectModel>
+
+    @Query("SELECT COUNT(*) FROM objects WHERE needsSync = 1")
+    suspend fun getPendingCount(): Int
+
+    @Query("UPDATE objects SET needsSync = 1 WHERE id IN (:objectIds)")
+    suspend fun markManyAsPending(objectIds: List<String>)
 }

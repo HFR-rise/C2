@@ -20,6 +20,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -31,7 +33,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,17 +42,19 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.example.myapplication.data.models.Contact
-import com.example.myapplication.data.models.ContactMethod
 import com.example.myapplication.data.models.Material
+import com.example.myapplication.data.models.ProjectMemberDto
 import com.example.myapplication.data.models.WorkItem
 import com.example.myapplication.ui.components.AddMaterialDialogSimple
 import com.example.myapplication.ui.components.AddWorkDialogSimple
 import com.example.myapplication.ui.components.ContactSelectorConfig
 import com.example.myapplication.ui.components.ContactSelectorDialog
-import com.example.myapplication.ui.theme.components.ContactDetailsDialog
-import com.example.myapplication.viewmodels.ContactsViewModel
+import com.example.myapplication.ui.components.CustomSnackbarHost
+import com.example.myapplication.ui.components.MaterialDialog
+import com.example.myapplication.ui.components.WorkDialog
 import com.example.myapplication.viewmodels.ProjectsViewModel
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
+import kotlin.coroutines.cancellation.CancellationException
 
 enum class ProjectScreenMode {
     CREATE, EDIT, VIEW;
@@ -73,49 +76,41 @@ enum class ProjectScreenMode {
         }
 }
 
-enum class ContactRole(val selectorTitle: String) {
+enum class MemberRole(val selectorTitle: String) {
     CUSTOMER("Выберите заказчика"),
-    FOREMAN("Выберите прораба"),
-    MANAGER("Выберите менеджера")
+    ESTIMATOR("Выберите сметчика"),
+    BUILDERS("Выберите строителя")
 }
 
 data class ProjectFormState(
     val name: String = "",
     val description: String = "",
-    val selectedCustomer: Contact? = null,
-    val selectedForeman: Contact? = null,
-    val selectedManager: Contact? = null,
-    val includeForeman: Boolean = false,
-    val includeManager: Boolean = false,
     val materials: List<Material> = emptyList(),
-    val workItems: List<WorkItem> = emptyList()
+    val workItems: List<WorkItem> = emptyList(),
+
+    val memberCustomer: Contact? = null,
+    val memberEstimator: Contact? = null,
+    val memberBuilders: List<Contact> = emptyList()
 ) {
     val totalMaterialCost: Double get() = materials.sumOf { it.quantity * it.unitPrice }
     val totalWorkCost: Double get() = workItems.sumOf { it.laborHours * it.hourlyRate + it.materialCost }
     val grandTotal: Double get() = totalMaterialCost + totalWorkCost
     val isValid: Boolean get() = name.isNotBlank()
-
-    fun contactFor(role: ContactRole): Contact? = when (role) {
-        ContactRole.CUSTOMER -> selectedCustomer
-        ContactRole.FOREMAN -> selectedForeman
-        ContactRole.MANAGER -> selectedManager
-    }
-
-    fun withContact(role: ContactRole, contact: Contact?): ProjectFormState = when (role) {
-        ContactRole.CUSTOMER -> copy(selectedCustomer = contact)
-        ContactRole.FOREMAN -> copy(selectedForeman = contact)
-        ContactRole.MANAGER -> copy(selectedManager = contact)
-    }
 }
 
 private class CreateProjectUiState {
     var form by mutableStateOf(ProjectFormState())
     var currentStep by mutableStateOf(1)
     var isInitialLoading by mutableStateOf(false)
-    var showContactSelectorFor by mutableStateOf<ContactRole?>(null)
+    var isSubmitting by mutableStateOf(false)
+    var showMemberSelectorFor by mutableStateOf<MemberRole?>(null)
     var showAddMaterialDialog by mutableStateOf(false)
     var showAddWorkDialog by mutableStateOf(false)
-    var showContactInfoFor by mutableStateOf<ContactRole?>(null)
+
+    var myRole by mutableStateOf<String?>(null)
+
+    var editingMaterial by mutableStateOf<Material?>(null)
+    var editingWorkItem by mutableStateOf<WorkItem?>(null)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -127,16 +122,34 @@ fun CreateProjectScreen(
     projectId: String? = null,
     viewModel: ProjectsViewModel = hiltViewModel()
 ) {
-    val contactsViewModel: ContactsViewModel = hiltViewModel()
-
     val uiState = remember { CreateProjectUiState() }
     val isReadOnly = mode.isReadOnly
 
-    val methodsByRole = remember { mutableStateOf(ContactMethodsHolder()) }
-
     val allContacts by viewModel.contacts.collectAsState()
 
-    LaunchedEffect(projectId, mode, allContacts) {
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    var pendingWarning by remember { mutableStateOf<String?>(null) }
+    var pendingNavigate by remember { mutableStateOf(false) }
+
+    LaunchedEffect(pendingNavigate) {
+        if (!pendingNavigate) return@LaunchedEffect
+
+        val msg = pendingWarning
+        if (msg != null) {
+            snackbarHostState.showSnackbar(
+                message = msg,
+                duration = SnackbarDuration.Short,
+                withDismissAction = true
+            )
+        }
+        delay(200)
+        pendingWarning = null
+        pendingNavigate = false
+        navController.navigateUp()
+    }
+
+    LaunchedEffect(projectId, mode) {
         if (mode == ProjectScreenMode.CREATE || projectId == null) {
             uiState.isInitialLoading = false
             return@LaunchedEffect
@@ -150,35 +163,20 @@ fun CreateProjectScreen(
 
         val loaded = loadProjectData(
             projectId = projectId,
-            viewModel = viewModel,
-            allContacts = allContacts
+            viewModel = viewModel
         )
 
         if (loaded != null) {
-            uiState.form = mergeLoadedProject(
-                current = uiState.form,
-                loaded = loaded,
-                allContacts = allContacts
-            )
+            uiState.form = mergeLoadedProject(uiState.form, loaded.first)
+            uiState.myRole = loaded.second
         }
 
         uiState.isInitialLoading = false
     }
 
-    LaunchedEffect(uiState.form.selectedCustomer?.id) {
-        methodsByRole.value = methodsByRole.value.copy(
-            customer = loadContactMethods(contactsViewModel, uiState.form.selectedCustomer?.id)
-        )
-    }
-    LaunchedEffect(uiState.form.selectedForeman?.id) {
-        methodsByRole.value = methodsByRole.value.copy(
-            foreman = loadContactMethods(contactsViewModel, uiState.form.selectedForeman?.id)
-        )
-    }
-    LaunchedEffect(uiState.form.selectedManager?.id) {
-        methodsByRole.value = methodsByRole.value.copy(
-            manager = loadContactMethods(contactsViewModel, uiState.form.selectedManager?.id)
-        )
+    val canManageMembers = when (mode) {
+        ProjectScreenMode.CREATE -> true
+        ProjectScreenMode.EDIT, ProjectScreenMode.VIEW -> uiState.myRole == "CUSTOMER"
     }
 
     Scaffold(
@@ -192,6 +190,7 @@ fun CreateProjectScreen(
                 }
             )
         },
+        snackbarHost = { CustomSnackbarHost(hostState = snackbarHostState) },
         floatingActionButton = {
             if (!isReadOnly && uiState.currentStep == 2) {
                 AddItemFab(
@@ -220,16 +219,20 @@ fun CreateProjectScreen(
                             1 -> ProjectStep1(
                                 form = uiState.form,
                                 isReadOnly = isReadOnly,
-                                customerMethods = methodsByRole.value.customer,
-                                foremanMethods = methodsByRole.value.foreman,
-                                managerMethods = methodsByRole.value.manager,
-                                onFormUpdate = { uiState.form = it },
-                                onShowContactSelector = { uiState.showContactSelectorFor = it },
-                                onShowContactInfo = { uiState.showContactInfoFor = it }
+                                canManageMembers = canManageMembers,
+                                showCustomerHint = (mode == ProjectScreenMode.CREATE),
+                                onFormUpdate = { updatedForm -> uiState.form = updatedForm },
+                                onShowMemberSelector = { role -> uiState.showMemberSelectorFor = role }
                             )
                             2 -> ProjectStep2(
                                 form = uiState.form,
                                 isReadOnly = isReadOnly,
+                                onEditMaterial = { material ->
+                                    uiState.editingMaterial = material
+                                },
+                                onEditWorkItem = { work ->
+                                    uiState.editingWorkItem = work
+                                },
                                 onDeleteMaterial = { material ->
                                     uiState.form = uiState.form.copy(
                                         materials = uiState.form.materials.filter { it.id != material.id }
@@ -248,30 +251,86 @@ fun CreateProjectScreen(
                         mode = mode,
                         currentStep = uiState.currentStep,
                         form = uiState.form,
-                        objectId = objectId,
-                        projectId = projectId,
-                        viewModel = viewModel,
+                        isSubmitting = uiState.isSubmitting,
                         onNext = { uiState.currentStep = 2 },
-                        onComplete = { navController.navigateUp() }
+                        onCancel = { navController.navigateUp() },
+                        onCreate = {
+                            if (!formIsValid(uiState.form)) return@ProjectBottomButton
+                            uiState.isSubmitting = true
+
+                            viewModel.createProjectWithMaterialsAndWorks(
+                                name = uiState.form.name,
+                                description = uiState.form.description,
+                                objectId = normalizeObjectId(objectId),
+                                materials = uiState.form.materials,
+                                workItems = uiState.form.workItems,
+                                memberCustomer = uiState.form.memberCustomer,
+                                memberEstimator = uiState.form.memberEstimator,
+                                memberBuilders = uiState.form.memberBuilders,
+                                onResult = { result ->
+                                    uiState.isSubmitting = false
+                                    if (result.isSuccess) {
+                                        pendingWarning = result.warning
+                                        pendingNavigate = true
+                                    }
+                                }
+                            )
+                        },
+                        onUpdate = {
+                            if (projectId == null || !formIsValid(uiState.form)) return@ProjectBottomButton
+                            uiState.isSubmitting = true
+
+                            viewModel.updateProjectWithMembers(
+                                projectId = projectId,
+                                name = uiState.form.name,
+                                description = uiState.form.description,
+                                materials = uiState.form.materials,
+                                workItems = uiState.form.workItems,
+                                memberCustomer = uiState.form.memberCustomer,
+                                memberEstimator = uiState.form.memberEstimator,
+                                memberBuilders = uiState.form.memberBuilders,
+                                onResult = { warning ->
+                                    uiState.isSubmitting = false
+                                    if (warning != null) {
+                                        pendingWarning = warning
+                                    }
+                                    pendingNavigate = true
+                                }
+                            )
+                        }
                     )
                 }
             }
         }
     }
 
-    uiState.showContactSelectorFor?.let { role ->
+    uiState.showMemberSelectorFor?.let { role ->
         ContactSelectorDialog(
             config = ContactSelectorConfig(
                 title = role.selectorTitle,
-                showFilterMenu = true,
-                showEdit = true,
-                showInfo = true,
-                showDuplicates = true
+                requirePhone = true,
+                validateContact = { contact ->
+                    viewModel.checkContactExists(contact)
+                }
             ),
-            onDismiss = { uiState.showContactSelectorFor = null },
+            onDismiss = { uiState.showMemberSelectorFor = null },
             onSelect = { contact ->
-                uiState.form = uiState.form.withContact(role, contact)
-                uiState.showContactSelectorFor = null
+                when (role) {
+                    MemberRole.CUSTOMER -> {
+                        uiState.form = uiState.form.copy(memberCustomer = contact)
+                    }
+                    MemberRole.ESTIMATOR -> {
+                        uiState.form = uiState.form.copy(memberEstimator = contact)
+                    }
+                    MemberRole.BUILDERS -> {
+                        if (uiState.form.memberBuilders.none { it.id == contact.id }) {
+                            uiState.form = uiState.form.copy(
+                                memberBuilders = uiState.form.memberBuilders + contact
+                            )
+                        }
+                    }
+                }
+                uiState.showMemberSelectorFor = null
             }
         )
     }
@@ -312,30 +371,52 @@ fun CreateProjectScreen(
         )
     }
 
-    uiState.showContactInfoFor?.let { role ->
-        val contact = uiState.form.contactFor(role)
-        val methods = methodsByRole.value.forRole(role)
-        contact?.let {
-            ContactDetailsDialog(
-                contact = it,
-                methods = methods,
-                onDismiss = { uiState.showContactInfoFor = null }
-            )
-        }
+    uiState.editingMaterial?.let { material ->
+        MaterialDialog(
+            material = material,
+            onDismiss = { uiState.editingMaterial = null },
+            onSave = { name, quantity, unit, price ->
+                uiState.form = uiState.form.copy(
+                    materials = uiState.form.materials.map { m ->
+                        if (m.id == material.id) {
+                            m.copy(
+                                name = name,
+                                quantity = quantity,
+                                unit = unit,
+                                unitPrice = price
+                            )
+                        } else m
+                    }
+                )
+                uiState.editingMaterial = null
+            }
+        )
+    }
+
+    uiState.editingWorkItem?.let { work ->
+        WorkDialog(
+            workItem = work,
+            onDismiss = { uiState.editingWorkItem = null },
+            onSave = { name, hours, rate, materialCost ->
+                uiState.form = uiState.form.copy(
+                    workItems = uiState.form.workItems.map { w ->
+                        if (w.id == work.id) {
+                            w.copy(
+                                name = name,
+                                laborHours = hours,
+                                hourlyRate = rate,
+                                materialCost = materialCost
+                            )
+                        } else w
+                    }
+                )
+                uiState.editingWorkItem = null
+            }
+        )
     }
 }
 
-private data class ContactMethodsHolder(
-    val customer: List<ContactMethod> = emptyList(),
-    val foreman: List<ContactMethod> = emptyList(),
-    val manager: List<ContactMethod> = emptyList()
-) {
-    fun forRole(role: ContactRole): List<ContactMethod> = when (role) {
-        ContactRole.CUSTOMER -> customer
-        ContactRole.FOREMAN -> foreman
-        ContactRole.MANAGER -> manager
-    }
-}
+private fun formIsValid(form: ProjectFormState): Boolean = form.name.isNotBlank()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -397,11 +478,11 @@ private fun ProjectBottomButton(
     mode: ProjectScreenMode,
     currentStep: Int,
     form: ProjectFormState,
-    objectId: String?,
-    projectId: String?,
-    viewModel: ProjectsViewModel,
+    isSubmitting: Boolean,
     onNext: () -> Unit,
-    onComplete: () -> Unit
+    onCancel: () -> Unit,
+    onCreate: () -> Unit,
+    onUpdate: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -422,49 +503,25 @@ private fun ProjectBottomButton(
             Button(
                 onClick = {
                     when (mode) {
-                        ProjectScreenMode.CREATE -> {
-                            if (form.isValid) {
-                                viewModel.createProjectWithMaterialsAndWorks(
-                                    name = form.name,
-                                    description = form.description,
-                                    objectId = normalizeObjectId(objectId),
-                                    materials = form.materials,
-                                    workItems = form.workItems,
-                                    customerContactId = form.selectedCustomer?.id,
-                                    foremanContactId = form.selectedForeman?.id,
-                                    managerContactId = form.selectedManager?.id,
-                                    includeForeman = form.includeForeman,
-                                    includeManager = form.includeManager
-                                )
-                                onComplete()
-                            }
-                        }
-                        ProjectScreenMode.EDIT -> {
-                            if (projectId != null && form.isValid) {
-                                viewModel.updateProject(
-                                    projectId = projectId,
-                                    name = form.name,
-                                    description = form.description,
-                                    materials = form.materials,
-                                    workItems = form.workItems,
-                                    customerContactId = form.selectedCustomer?.id,
-                                    foremanContactId = form.selectedForeman?.id,
-                                    managerContactId = form.selectedManager?.id,
-                                    includeForeman = form.includeForeman,
-                                    includeManager = form.includeManager
-                                )
-                                onComplete()
-                            }
-                        }
-                        ProjectScreenMode.VIEW -> onComplete()
+                        ProjectScreenMode.CREATE -> onCreate()
+                        ProjectScreenMode.EDIT -> onUpdate()
+                        ProjectScreenMode.VIEW -> onCancel()
                     }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                enabled = mode.isReadOnly || form.isValid
+                enabled = (mode.isReadOnly || form.isValid) && !isSubmitting
             ) {
-                Text(mode.bottomButtonText)
+                if (isSubmitting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text(mode.bottomButtonText)
+                }
             }
         }
     }
@@ -472,72 +529,89 @@ private fun ProjectBottomButton(
 
 private suspend fun loadProjectData(
     projectId: String,
-    viewModel: ProjectsViewModel,
-    allContacts: List<Contact>
-): ProjectFormState? {
+    viewModel: ProjectsViewModel
+): Pair<ProjectFormState, String?>? {
     return try {
-        val project = viewModel.getProjectByIdAsync(projectId) ?: return null
+        val result = viewModel.getProjectWithMembers(projectId)
+        if (result == null) {
+            Log.w(TAG, "loadProjectData: project $projectId not found")
+            return null
+        }
+        val (project, members) = result
+
         val materials = viewModel.getMaterialsForProject(projectId)
         val workItems = viewModel.getWorkItemsForProject(projectId)
 
-        val customer = project.customerContactId?.let { id -> allContacts.find { it.id == id } }
-        val foreman = project.foremanContactId?.let { id -> allContacts.find { it.id == id } }
-        val manager = project.managerContactId?.let { id -> allContacts.find { it.id == id } }
+        val customerDto = members.firstOrNull { it.role == "CUSTOMER" }
+        val estimatorDto = members.firstOrNull { it.role == "ESTIMATOR" }
+        val builderDtos = members.filter { it.role == "BUILDER" }
 
-        ProjectFormState(
+        Log.d(TAG, "loadProjectData: members — customer=$customerDto, " +
+                "estimator=$estimatorDto, builders=${builderDtos.size}")
+
+        val customer = customerDto?.toContactForDisplay(viewModel)
+        val estimator = estimatorDto?.toContactForDisplay(viewModel)
+        val builders = builderDtos.mapNotNull { it.toContactForDisplay(viewModel) }
+
+        val form = ProjectFormState(
             name = project.name,
             description = project.description,
-            selectedCustomer = customer,
-            selectedForeman = foreman,
-            selectedManager = manager,
-            includeForeman = project.includeForeman,
-            includeManager = project.includeManager,
             materials = materials,
-            workItems = workItems
+            workItems = workItems,
+            memberCustomer = customer,
+            memberEstimator = estimator,
+            memberBuilders = builders
         )
+
+        form to project.myRole
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: Exception) {
-        Log.e(TAG, "loadProjectData: ${e.message}")
+        Log.e(TAG, "loadProjectData: ${e.message}", e)
         null
     }
 }
 
+private suspend fun ProjectMemberDto.toContactForDisplay(
+    viewModel: ProjectsViewModel
+): Contact? {
+    val phone = phoneNumber
+    val userId = userId
+
+    if (phone.isNullOrBlank() && name.isNullOrBlank()) {
+        Log.w(TAG, "toContactForDisplay: userId=$userId has no phone and no name — skip")
+        return null
+    }
+
+    val nameFromProfile = name?.takeIf { it.isNotBlank() }
+
+    val nameFromContact = if (nameFromProfile == null) {
+        viewModel.findLocalContactNameByPhone(phone)
+    } else null
+
+    val displayName = nameFromProfile
+        ?: nameFromContact
+        ?: phone
+        ?: userId
+
+    Log.d(TAG, "toContactForDisplay: userId=$userId, phone=$phone, " +
+            "nameFromProfile=$nameFromProfile, nameFromContact=$nameFromContact, " +
+            "→ displayName='$displayName'")
+
+    return Contact(
+        id = userId,
+        name = displayName,
+        description = phone.orEmpty(),
+        userId = userId
+    )
+}
+
 private fun mergeLoadedProject(
     current: ProjectFormState,
-    loaded: ProjectFormState,
-    allContacts: List<Contact>
+    loaded: ProjectFormState
 ): ProjectFormState {
     val isFirstLoad = current.name.isBlank() && current.materials.isEmpty()
-
-    return if (isFirstLoad) {
-        loaded.copy(
-            selectedCustomer = refreshContact(loaded.selectedCustomer, allContacts),
-            selectedForeman = refreshContact(loaded.selectedForeman, allContacts),
-            selectedManager = refreshContact(loaded.selectedManager, allContacts)
-        )
-    } else {
-        current.copy(
-            selectedCustomer = refreshContact(current.selectedCustomer, allContacts),
-            selectedForeman = refreshContact(current.selectedForeman, allContacts),
-            selectedManager = refreshContact(current.selectedManager, allContacts)
-        )
-    }
-}
-
-private fun refreshContact(current: Contact?, all: List<Contact>): Contact? {
-    if (current == null) return null
-    return all.find { it.id == current.id } ?: current
-}
-
-private suspend fun loadContactMethods(
-    viewModel: ContactsViewModel,
-    contactId: String?
-): List<ContactMethod> {
-    if (contactId == null) return emptyList()
-    return try {
-        viewModel.getContactMethods(contactId).first()
-    } catch (e: Exception) {
-        emptyList()
-    }
+    return if (isFirstLoad) loaded else current
 }
 
 private fun normalizeObjectId(objectId: String?): String? = when (objectId) {

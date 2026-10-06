@@ -1,17 +1,42 @@
 package com.example.estimateserver.model;
 
-import jakarta.persistence.*;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Table;
+import jakarta.persistence.Temporal;
+import jakarta.persistence.TemporalType;
+import jakarta.persistence.Version;
+
 import java.util.Date;
+import java.util.Objects;
 import java.util.UUID;
 
 @Entity
-@Table(name = "projects")
+@Table(
+        name = "projects",
+        indexes = {
+                @Index(name = "idx_project_object", columnList = "object_id"),
+                @Index(name = "idx_project_state", columnList = "state")
+        }
+)
 public class Project {
+
     @Id
+    @Column(length = 36)
     private String id = UUID.randomUUID().toString();
 
-    @Column(name = "share_status")
-    private String shareStatus = "PENDING";
+    @Enumerated(EnumType.STRING)
+    @Column(name = "state", nullable = false, length = 32)
+    private ProjectState state = ProjectState.DRAFT;
+
+    @Column(name = "has_pending_changes", nullable = false)
+    private boolean hasPendingChanges = false;
 
     @Column(nullable = false)
     private String name;
@@ -19,41 +44,61 @@ public class Project {
     @Column(length = 1000)
     private String description;
 
+    @Column(name = "object_id", length = 36)
     private String objectId;
-    private String customerContactId;
-    private String foremanContactId;
-    private String managerContactId;
-    private boolean includeForeman;
-    private boolean includeManager;
 
+    @Temporal(TemporalType.TIMESTAMP)
+    @Column(name = "created_at", nullable = false, updatable = false)
     private Date createdAt = new Date();
+
+    @Temporal(TemporalType.TIMESTAMP)
+    @Column(name = "updated_at", nullable = false)
     private Date updatedAt = new Date();
 
+    @Column(nullable = false, length = 32)
     private String status = "ACTIVE";
+
+    @Column(name = "total_budget", nullable = false)
     private Double totalBudget = 0.0;
+
+    @Column(name = "total_spent", nullable = false)
     private Double totalSpent = 0.0;
 
-    @Column(nullable = false)
+    @Column(name = "created_by", nullable = false, length = 36)
     private String createdBy;
 
+    @Column(name = "last_modified_by", length = 36)
     private String lastModifiedBy;
 
-    @Column(nullable = false)
-    private String userId;
-
     @Version
+    @Column(nullable = false)
     private Long version;
 
-    public Project() {}
+    public Project() {
+    }
 
-    public String getShareStatus() { return shareStatus; }
-    public void setShareStatus(String shareStatus) { this.shareStatus = shareStatus; }
+    @PrePersist
+    void onCreate() {
+        Date now = new Date();
+        if (createdAt == null) createdAt = now;
+        if (updatedAt == null) updatedAt = now;
+    }
 
-    public String getUserId() { return userId; }
-    public void setUserId(String userId) { this.userId = userId; }
+    @PreUpdate
+    void onUpdate() {
+        updatedAt = new Date();
+    }
 
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
+
+    public ProjectState getState() { return state; }
+    public void setState(ProjectState state) { this.state = state; }
+
+    public boolean isHasPendingChanges() { return hasPendingChanges; }
+    public void setHasPendingChanges(boolean hasPendingChanges) {
+        this.hasPendingChanges = hasPendingChanges;
+    }
 
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
@@ -63,21 +108,6 @@ public class Project {
 
     public String getObjectId() { return objectId; }
     public void setObjectId(String objectId) { this.objectId = objectId; }
-
-    public String getCustomerContactId() { return customerContactId; }
-    public void setCustomerContactId(String customerContactId) { this.customerContactId = customerContactId; }
-
-    public String getForemanContactId() { return foremanContactId; }
-    public void setForemanContactId(String foremanContactId) { this.foremanContactId = foremanContactId; }
-
-    public String getManagerContactId() { return managerContactId; }
-    public void setManagerContactId(String managerContactId) { this.managerContactId = managerContactId; }
-
-    public boolean isIncludeForeman() { return includeForeman; }
-    public void setIncludeForeman(boolean includeForeman) { this.includeForeman = includeForeman; }
-
-    public boolean isIncludeManager() { return includeManager; }
-    public void setIncludeManager(boolean includeManager) { this.includeManager = includeManager; }
 
     public Date getCreatedAt() { return createdAt; }
     public void setCreatedAt(Date createdAt) { this.createdAt = createdAt; }
@@ -98,8 +128,28 @@ public class Project {
     public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }
 
     public String getLastModifiedBy() { return lastModifiedBy; }
-    public void setLastModifiedBy(String lastModifiedBy) { this.lastModifiedBy = lastModifiedBy; }
+    public void setLastModifiedBy(String lastModifiedBy) {
+        this.lastModifiedBy = lastModifiedBy;
+    }
 
     public Long getVersion() { return version; }
     public void setVersion(Long version) { this.version = version; }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Project other)) return false;
+        return id != null && id.equals(other.id);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(id);
+    }
+
+    @Override
+    public String toString() {
+        return "Project{id='" + id + "', name='" + name +
+                "', state=" + state + ", version=" + version + '}';
+    }
 }

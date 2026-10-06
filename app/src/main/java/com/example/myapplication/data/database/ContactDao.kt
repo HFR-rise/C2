@@ -44,4 +44,19 @@ interface ContactDao {
 
     @Query("DELETE FROM contacts")
     suspend fun deleteAll()
+
+    @Query("UPDATE contacts SET needsSync = 1 WHERE id = :contactId")
+    suspend fun markAsPending(contactId: String)
+
+    @Query("UPDATE contacts SET needsSync = 0 WHERE id = :contactId")
+    suspend fun markAsSynced(contactId: String)
+
+    @Query("SELECT * FROM contacts WHERE needsSync = 1")
+    suspend fun getPendingContacts(): List<Contact>
+
+    @Query("SELECT COUNT(*) FROM contacts WHERE needsSync = 1")
+    suspend fun getPendingCount(): Int
+
+    @Query("UPDATE contacts SET needsSync = 1 WHERE id IN (:contactIds)")
+    suspend fun markManyAsPending(contactIds: List<String>)
 }

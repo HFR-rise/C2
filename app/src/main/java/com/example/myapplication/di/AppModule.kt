@@ -2,8 +2,10 @@ package com.example.myapplication.di
 
 import android.content.Context
 import com.example.myapplication.data.database.AppDatabase
+import com.example.myapplication.data.database.ChangeRequestDao
 import com.example.myapplication.data.database.ContactDao
 import com.example.myapplication.data.database.ContactMethodDao
+import com.example.myapplication.data.database.EstimateDraftDao
 import com.example.myapplication.data.database.MaterialDao
 import com.example.myapplication.data.database.ObjectDao
 import com.example.myapplication.data.database.ProjectDao
@@ -29,6 +31,14 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideProjectDao(db: AppDatabase): ProjectDao = db.projectDao()
+
+    @Provides
+    @Singleton
+    fun provideChangeRequestDao(db: AppDatabase): ChangeRequestDao = db.changeRequestDao()
+
+    @Provides
+    @Singleton
+    fun provideEstimateDraftDao(db: AppDatabase): EstimateDraftDao = db.estimateDraftDao()
 
     @Provides
     @Singleton

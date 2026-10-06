@@ -10,8 +10,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
@@ -38,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.myapplication.data.models.Contact
@@ -59,6 +61,13 @@ fun ContactEditDialog(
     val originalMethods = remember(methods) { methods.toList() }
 
     var localMethods by remember(contact) { mutableStateOf(methods.toList()) }
+    var hasUserInteracted by remember(contact) { mutableStateOf(false) }
+
+    LaunchedEffect(contact?.id, methods) {
+        if (!hasUserInteracted && methods.isNotEmpty()) {
+            localMethods = methods.toList()
+        }
+    }
 
     val addedMethods = remember { mutableStateListOf<ContactMethod>() }
     val updatedMethods = remember { mutableStateListOf<ContactMethod>() }
@@ -68,6 +77,7 @@ fun ContactEditDialog(
     var editingMethod by remember { mutableStateOf<ContactMethod?>(null) }
 
     fun addMethodLocally(methodType: String, value: String) {
+        hasUserInteracted = true
         val newMethod = ContactMethod(
             contactId = contact?.id ?: "temp_${System.currentTimeMillis()}",
             methodType = methodType,
@@ -78,6 +88,7 @@ fun ContactEditDialog(
     }
 
     fun updateMethodLocally(oldMethod: ContactMethod, newMethod: ContactMethod) {
+        hasUserInteracted = true
         localMethods = localMethods.map {
             if (it.id == oldMethod.id) newMethod else it
         }
@@ -91,6 +102,7 @@ fun ContactEditDialog(
     }
 
     fun deleteMethodLocally(method: ContactMethod) {
+        hasUserInteracted = true
         localMethods = localMethods.filter { it.id != method.id }
         if (addedMethods.contains(method)) {
             addedMethods.remove(method)
@@ -119,7 +131,8 @@ fun ContactEditDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 500.dp),
+                    .heightIn(max = 500.dp)
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 OutlinedTextField(
@@ -127,13 +140,17 @@ fun ContactEditDialog(
                     onValueChange = { name = it },
                     label = { Text("Имя*") },
                     modifier = Modifier.fillMaxWidth(),
-                    isError = name.isBlank()
+                    isError = name.isBlank(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
                 )
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
                     label = { Text("Описание") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
                 )
 
                 Divider()
@@ -165,13 +182,11 @@ fun ContactEditDialog(
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
                 } else {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 200.dp),
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(localMethods) { method ->
+                        localMethods.forEach { method ->
                             EditableMethodItem(
                                 method = method,
                                 onEdit = { editingMethod = method },

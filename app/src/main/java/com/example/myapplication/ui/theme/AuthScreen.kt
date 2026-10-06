@@ -42,11 +42,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.example.myapplication.utils.PhoneUtils
 import com.example.myapplication.viewmodels.AuthViewModel
 import kotlinx.coroutines.delay
 
@@ -184,9 +187,51 @@ private fun PhoneInputStep(
 ) {
     val showError = errorMessage != null && !showAccountInUseError
 
+    var phoneTextFieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = phoneNumber,
+                selection = TextRange(phoneNumber.length)
+            )
+        )
+    }
+
+    LaunchedEffect(phoneNumber) {
+        if (phoneNumber != phoneTextFieldValue.text) {
+            phoneTextFieldValue = TextFieldValue(
+                text = phoneNumber,
+                selection = TextRange(phoneNumber.length)
+            )
+        }
+    }
+
     OutlinedTextField(
-        value = phoneNumber,
-        onValueChange = onPhoneChange,
+        value = phoneTextFieldValue,
+        onValueChange = { newValue ->
+            val newText = newValue.text
+            val cursorPos = newValue.selection.start
+
+            val digits = newText.filter { it.isDigit() }.take(11)
+            val formatted = PhoneUtils.format(digits)
+
+            val digitsBeforeCursor = newText.take(cursorPos).count { it.isDigit() }
+
+            val totalDigitsBefore = when {
+                digitsBeforeCursor == 0 -> 0
+                !newText.startsWith("+7") -> digitsBeforeCursor + 1
+                else -> digitsBeforeCursor
+            }
+
+            val newCursorPos = PhoneUtils.cursorPositionAfterDigit(formatted, totalDigitsBefore)
+
+            val newFieldValue = TextFieldValue(
+                text = formatted,
+                selection = TextRange(newCursorPos)
+            )
+            phoneTextFieldValue = newFieldValue
+
+            onPhoneChange(formatted)
+        },
         label = { Text("Номер телефона") },
         placeholder = { Text("+7 (XXX) XXX-XX-XX") },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),

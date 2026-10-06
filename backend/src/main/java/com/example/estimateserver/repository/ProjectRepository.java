@@ -1,6 +1,8 @@
 package com.example.estimateserver.repository;
 
 import com.example.estimateserver.model.Project;
+import com.example.estimateserver.model.ProjectRole;
+import com.example.estimateserver.model.ProjectState;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -13,47 +15,41 @@ import java.util.List;
 @Repository
 public interface ProjectRepository extends JpaRepository<Project, String> {
 
-    List<Project> findByUserId(String userId);
-
-    @Query("SELECT p FROM Project p WHERE p.userId = :userId ORDER BY p.updatedAt DESC")
-    List<Project> findAllByUserIdOrderByUpdatedAtDesc(@Param("userId") String userId);
-
     List<Project> findByObjectId(String objectId);
-
-    List<Project> findByUserIdAndObjectId(String userId, String objectId);
 
     @Query("SELECT p FROM Project p WHERE p.objectId IN :objectIds")
     List<Project> findAllByObjectIdIn(@Param("objectIds") Collection<String> objectIds);
 
     @Query("SELECT DISTINCT p FROM Project p " +
-            "WHERE p.userId = :userId " +
-            "OR p.id IN (SELECT sp.projectId FROM SharedProject sp " +
-            "            WHERE sp.sharedWithUserId = :userId)")
+            "WHERE p.id IN (SELECT pm.projectId FROM ProjectMember pm " +
+            "               WHERE pm.userId = :userId)")
     List<Project> findAllAccessibleForUser(@Param("userId") String userId);
 
     @Query("SELECT DISTINCT p FROM Project p " +
-            "WHERE p.id IN (SELECT sp.projectId FROM SharedProject sp " +
-            "               WHERE sp.sharedWithUserId = :userId)")
-    List<Project> findSharedWithUser(@Param("userId") String userId);
+            "WHERE p.id IN (SELECT pm.projectId FROM ProjectMember pm " +
+            "               WHERE pm.userId = :userId AND pm.role = :role)")
+    List<Project> findAllForUserWithRole(@Param("userId") String userId,
+                                         @Param("role") ProjectRole role);
 
     @Query("SELECT CASE WHEN COUNT(p) > 0 THEN true ELSE false END FROM Project p " +
-            "WHERE p.id = :projectId AND (" +
-            "   p.userId = :userId " +
-            "   OR p.id IN (SELECT sp.projectId FROM SharedProject sp " +
-            "               WHERE sp.projectId = :projectId AND sp.sharedWithUserId = :userId)" +
-            ")")
+            "WHERE p.id = :projectId AND EXISTS (" +
+            "   SELECT 1 FROM ProjectMember pm " +
+            "   WHERE pm.projectId = p.id AND pm.userId = :userId)")
     boolean hasUserAccessToProject(@Param("projectId") String projectId,
                                    @Param("userId") String userId);
 
-    @Query("SELECT DISTINCT p FROM Project p " +
-            "LEFT JOIN Contact c ON c.id = p.customerContactId " +
-            "                   OR c.id = p.foremanContactId " +
-            "                   OR c.id = p.managerContactId " +
-            "LEFT JOIN ContactMethod cm ON cm.contactId = c.id " +
-            "WHERE p.userId = :userId " +
-            "  AND cm.value LIKE CONCAT('%', :phoneNumber, '%')")
-    List<Project> findProjectsByContactPhoneForUser(@Param("phoneNumber") String phoneNumber,
-                                                    @Param("userId") String userId);
+    @Query("SELECT p.state FROM Project p WHERE p.id = :id")
+    ProjectState findStateById(@Param("id") String id);
+
+    @Modifying
+    @Query("UPDATE Project p SET p.state = :state, p.updatedAt = CURRENT_TIMESTAMP " +
+            "WHERE p.id = :id")
+    int updateState(@Param("id") String id, @Param("state") ProjectState state);
+
+    @Modifying
+    @Query("UPDATE Project p SET p.hasPendingChanges = :has, " +
+            "p.updatedAt = CURRENT_TIMESTAMP WHERE p.id = :id")
+    int updateHasPendingChanges(@Param("id") String id, @Param("has") boolean has);
 
     @Modifying
     @Query("UPDATE Project p SET p.totalBudget = :total WHERE p.id = :id")

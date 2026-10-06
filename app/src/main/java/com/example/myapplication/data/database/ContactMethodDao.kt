@@ -27,6 +27,9 @@ interface ContactMethodDao {
     @Insert
     suspend fun insertContactMethod(method: ContactMethod)
 
+    @Insert
+    suspend fun insertContactMethods(methods: List<ContactMethod>)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertContactMethod(method: ContactMethod)
 
@@ -38,6 +41,12 @@ interface ContactMethodDao {
 
     @Query("DELETE FROM contact_methods WHERE id = :methodId")
     suspend fun deleteContactMethodById(methodId: String)
+
+    @Query("DELETE FROM contact_methods WHERE contactId = :contactId")
+    suspend fun deleteByContactId(contactId: String)
+
+    @Query("DELETE FROM contact_methods WHERE contactId IN (:contactIds)")
+    suspend fun deleteByContactIds(contactIds: List<String>)
 
     @Query("DELETE FROM contact_methods")
     suspend fun deleteAll()

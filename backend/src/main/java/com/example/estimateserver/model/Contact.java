@@ -6,19 +6,40 @@ import java.util.UUID;
 @Entity
 @Table(name = "contacts")
 public class Contact {
+
     @Id
     private String id = UUID.randomUUID().toString();
 
     @Column(nullable = false)
     private String name;
 
-    private String description;
-    private Long createdAt = System.currentTimeMillis();
-
-    public Contact() {}
+    @Column(nullable = false)
+    private String description = "";
 
     @Column(nullable = false)
     private String userId;
+
+    private Long createdAt = System.currentTimeMillis();
+    private Long updatedAt = System.currentTimeMillis();
+
+    @Version
+    private Long version;
+
+    public Contact() {}
+
+    @PrePersist
+    void onCreate() {
+        long now = System.currentTimeMillis();
+        if (createdAt == null) createdAt = now;
+        if (updatedAt == null) updatedAt = now;
+        if (description == null) description = "";
+    }
+
+    @PreUpdate
+    void onUpdate() {
+        updatedAt = System.currentTimeMillis();
+        if (description == null) description = "";
+    }
 
     public String getUserId() { return userId; }
     public void setUserId(String userId) { this.userId = userId; }
@@ -34,4 +55,10 @@ public class Contact {
 
     public Long getCreatedAt() { return createdAt; }
     public void setCreatedAt(Long createdAt) { this.createdAt = createdAt; }
+
+    public Long getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(Long updatedAt) { this.updatedAt = updatedAt; }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 }

@@ -8,6 +8,7 @@ import com.example.myapplication.data.models.VerifyCodeRequest
 import com.example.myapplication.network.ApiService
 import com.example.myapplication.services.SyncManager
 import com.example.myapplication.services.WebSocketService
+import com.example.myapplication.utils.PhoneUtils
 import com.example.myapplication.utils.UserPreferences
 import com.google.gson.Gson
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -77,6 +78,11 @@ class AuthViewModel @Inject constructor(
     }
 
     private fun restoreSessionIfLoggedIn() {
+        if (_currentUser.value != null) {
+            Log.d(TAG, "User already logged in, skipping restore")
+            return
+        }
+
         val savedUserId = userPreferences.getUserId() ?: return
         if (!userPreferences.isLoggedIn()) return
 
@@ -105,6 +111,12 @@ class AuthViewModel @Inject constructor(
             }
 
             try {
+                syncManager.startPeriodicSync()
+            } catch (e: Exception) {
+                Log.e(TAG, "Start periodic sync failed: ${e.message}", e)
+            }
+
+            try {
                 webSocketService.connect(savedUserId)
             } catch (e: CancellationException) {
                 throw e
@@ -116,8 +128,10 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+
     fun updatePhoneNumber(value: String) {
-        _phoneNumber.value = value
+        val sanitized = PhoneUtils.format(value)
+        _phoneNumber.value = sanitized
         clearAllErrors()
     }
 
@@ -136,14 +150,20 @@ class AuthViewModel @Inject constructor(
     }
 
     fun sendCode() {
-        if (_phoneNumber.value.isBlank()) return
+        val normalized = PhoneUtils.normalize(_phoneNumber.value)
+        if (normalized.isBlank() || normalized.length != 11) {
+            setError("Введите корректный номер телефона")
+            return
+        }
+
+        Log.d(TAG, "sendCode: raw='${_phoneNumber.value}', normalized='$normalized'")
 
         safeLaunch(
-            block = { apiService.sendCode(SendCodeRequest(_phoneNumber.value)) },
+            block = { apiService.sendCode(SendCodeRequest(normalized)) },
             onSuccess = { response ->
                 if (response.isSuccessful) {
                     _isCodeSent.value = true
-                    Log.d(TAG, "Code sent to ${_phoneNumber.value}")
+                    Log.d(TAG, "Code sent to $normalized")
                 } else {
                     handleSendCodeError(response.code())
                 }
@@ -168,11 +188,17 @@ class AuthViewModel @Inject constructor(
     fun verifyCode() {
         if (_verificationCode.value.length < MIN_CODE_LENGTH) return
 
+        val normalized = PhoneUtils.normalize(_phoneNumber.value)
+        if (normalized.isBlank() || normalized.length != 11) {
+            setError("Введите корректный номер телефона")
+            return
+        }
+
         safeLaunch(
             block = {
                 val deviceId = getOrCreateDeviceId()
                 val request = VerifyCodeRequest(
-                    phoneNumber = _phoneNumber.value,
+                    phoneNumber = normalized,
                     code = _verificationCode.value,
                     deviceId = deviceId
                 )
@@ -223,7 +249,6 @@ class AuthViewModel @Inject constructor(
         }
 
         _showAccountInUseError.value = false
-        _isLoggedIn.value = true
 
         viewModelScope.launch {
             try {
@@ -235,12 +260,20 @@ class AuthViewModel @Inject constructor(
             }
 
             try {
+                syncManager.startPeriodicSync()
+            } catch (e: Exception) {
+                Log.e(TAG, "Start periodic sync failed: ${e.message}", e)
+            }
+
+            try {
                 webSocketService.connect(user.id)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "WS connect failed: ${e.message}", e)
             }
+
+            _isLoggedIn.value = true
         }
 
         Log.d(TAG, "✅ User logged in: ${user.id}")

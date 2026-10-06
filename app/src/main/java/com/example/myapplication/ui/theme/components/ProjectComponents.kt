@@ -13,7 +13,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -48,13 +47,11 @@ import java.util.Locale
 fun MaterialItem(
     material: Material,
     modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null,
+    onEdit: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null
 ) {
     Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
+        modifier = modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Row(
@@ -83,13 +80,24 @@ fun MaterialItem(
                     color = Color.Gray
                 )
             }
-            onDelete?.let {
-                IconButton(onClick = it) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "Удалить",
-                        tint = MaterialTheme.colorScheme.error
-                    )
+            Row {
+                onEdit?.let {
+                    IconButton(onClick = it) {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = "Редактировать",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                onDelete?.let {
+                    IconButton(onClick = it) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Удалить",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
         }
@@ -100,14 +108,12 @@ fun MaterialItem(
 fun WorkItemCard(
     workItem: WorkItem,
     modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null,
+    onEdit: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
     showDetails: Boolean = true
 ) {
     Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
+        modifier = modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Row(
@@ -143,13 +149,24 @@ fun WorkItemCard(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-            onDelete?.let {
-                IconButton(onClick = it) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "Удалить",
-                        tint = MaterialTheme.colorScheme.error
-                    )
+            Row {
+                onEdit?.let {
+                    IconButton(onClick = it) {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = "Редактировать",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                onDelete?.let {
+                    IconButton(onClick = it) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Удалить",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
         }
@@ -195,9 +212,16 @@ fun ProjectCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
-    onShare: (() -> Unit)? = null,
     onMove: (() -> Unit)? = null
 ) {
+    val role = project.myRole
+
+    val roleKnown = role != null
+
+    val canEdit = !roleKnown || role == "CUSTOMER" || role == "ESTIMATOR"
+    val canDelete = !roleKnown || role == "CUSTOMER"
+    val canMove = !roleKnown || role == "CUSTOMER"
+
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -223,38 +247,21 @@ fun ProjectCard(
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold
                     )
-
-                    if (project.description.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = project.description,
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
-                    }
                 }
 
                 Row {
-                    onShare?.let {
-                        IconButton(onClick = it) {
+                    if (canEdit) {
+                        IconButton(onClick = onEdit) {
                             Icon(
-                                Icons.Default.Share,
-                                contentDescription = "Поделиться",
-                                modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.primary
+                                Icons.Default.Edit,
+                                contentDescription = "Редактировать",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
-                    IconButton(onClick = onEdit) {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = "Редактировать",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    onMove?.let {
-                        IconButton(onClick = it) {
+                    if (onMove != null && canMove) {
+                        IconButton(onClick = onMove) {
                             Icon(
                                 Icons.Default.SwapHoriz,
                                 contentDescription = "Переместить",
@@ -263,13 +270,15 @@ fun ProjectCard(
                             )
                         }
                     }
-                    IconButton(onClick = onDelete) {
-                        Icon(
-                            Icons.Default.Delete,
-                            contentDescription = "Удалить",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(20.dp)
-                        )
+                    if (canDelete) {
+                        IconButton(onClick = onDelete) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "Удалить",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }

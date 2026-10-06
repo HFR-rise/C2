@@ -1,5 +1,6 @@
 package com.example.myapplication.di
 
+import com.example.myapplication.BuildConfig
 import com.example.myapplication.network.ApiService
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
@@ -19,9 +20,7 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
-    private const val BASE_URL = "http://192.168.0.109:8080/"
-
-    private const val WS_URL = "ws://192.168.0.109:8080/"
+    private val BASE_URL: String = BuildConfig.BASE_URL
 
     private const val TIMEOUT_SECONDS = 30L
 
@@ -35,15 +34,17 @@ object NetworkModule {
     @Singleton
     @Named("rest")
     fun provideRestOkHttpClient(
-        authInterceptor: AuthInterceptor
+        authInterceptor: AuthInterceptor,
+        sessionInvalidInterceptor: SessionInvalidInterceptor
     ): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
+            .addInterceptor(sessionInvalidInterceptor)
             .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .readTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
 
-        if (com.example.myapplication.BuildConfig.DEBUG) {
+        if (BuildConfig.DEBUG) {
             val loggingInterceptor = HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.BASIC
             }
@@ -79,9 +80,4 @@ object NetworkModule {
     @Singleton
     fun provideApiService(retrofit: Retrofit): ApiService =
         retrofit.create(ApiService::class.java)
-
-    @Provides
-    @Singleton
-    @Named("wsUrl")
-    fun provideWebSocketUrl(): String = WS_URL
 }

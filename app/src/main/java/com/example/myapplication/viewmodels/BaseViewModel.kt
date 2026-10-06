@@ -19,6 +19,9 @@ abstract class BaseViewModel : ViewModel() {
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    private val _warningMessage = MutableStateFlow<String?>(null)
+    val warningMessage: StateFlow<String?> = _warningMessage.asStateFlow()
+
     protected fun setLoading(loading: Boolean) {
         _isLoading.value = loading
     }
@@ -31,8 +34,16 @@ abstract class BaseViewModel : ViewModel() {
         _errorMessage.value = message
     }
 
-    protected fun clearError() {
+    fun clearError() {
         _errorMessage.value = null
+    }
+
+    fun setWarning(message: String?) {
+        _warningMessage.value = message
+    }
+
+    fun clearWarning() {
+        _warningMessage.value = null
     }
 
     protected fun <T> safeLaunch(

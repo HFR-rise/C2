@@ -17,20 +17,16 @@ import com.example.myapplication.viewmodels.ObjectsViewModel
 fun MoveProjectWrapper(
     navController: NavController,
     projectId: String,
-    currentObjectId: String?
+    currentObjectId: String?,
+    viewModel: ObjectsViewModel = hiltViewModel()
 ) {
-    val viewModel: ObjectsViewModel = hiltViewModel()
-
     var navigationStack by rememberSaveable {
         mutableStateOf<List<NavEntry>>(emptyList())
     }
     var selectedTarget by remember { mutableStateOf<MoveTarget?>(null) }
     var showConfirmDialog by remember { mutableStateOf(false) }
 
-    val initialParentId: String? = remember(currentObjectId) {
-        currentObjectId?.takeIf { it.isNotBlank() && it != "none" }
-    }
-    val currentParentId: String? = navigationStack.lastOrNull()?.id ?: initialParentId
+    val currentParentId: String? = navigationStack.lastOrNull()?.id
 
     val onObjectSelected: (String, String) -> Unit = remember {
         { objectId, objectName ->

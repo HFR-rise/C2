@@ -1,17 +1,24 @@
-
 package com.example.myapplication.data.database
 
 import androidx.room.Entity
-import androidx.room.PrimaryKey
+import androidx.room.Index
 
-@Entity(tableName = "sync_operations")
+@Entity(
+    tableName = "sync_operations",
+    primaryKeys = ["entityType", "entityId"],
+    indices = [
+        Index(value = ["userId"]),
+        Index(value = ["userId", "updatedAt"]),
+        Index(value = ["updatedAt"])
+    ]
+)
 data class SyncOperationEntity(
-    @PrimaryKey
-    val id: String,
-    val type: String,
     val entityType: String,
     val entityId: String,
-    val data: String,
-    val timestamp: Long,
-    val userId: String
+    val operation: String,
+    val payload: String?,
+    val updatedAt: Long,
+    val userId: String,
+    val attempts: Int = 0,
+    val lastError: String? = null
 )

@@ -43,14 +43,21 @@ class ObjectRepository @Inject constructor(
     suspend fun getAllObjectsOnce(): List<ObjectModel> =
         objectDao.getAllObjectsOnce()
 
-    suspend fun insertObject(objectModel: ObjectModel): Long =
-        objectDao.insertObject(objectModel)
+    suspend fun insertObject(objectModel: ObjectModel): Long {
+        val withPending = objectModel.copy(needsSync = true)
+        val id = objectDao.insertObject(withPending)
+        Log.d(TAG, "Object created (pending sync): ${withPending.id}")
+        return id
+    }
 
-    suspend fun updateObject(objectModel: ObjectModel) =
-        objectDao.updateObject(objectModel)
+    suspend fun updateObject(objectModel: ObjectModel) {
+        objectDao.updateObject(objectModel.copy(needsSync = true))
+        Log.d(TAG, "Object updated (pending sync): ${objectModel.id}")
+    }
 
-    suspend fun upsertObject(objectModel: ObjectModel) =
+    suspend fun upsertObject(objectModel: ObjectModel) {
         objectDao.upsertObject(objectModel)
+    }
 
     suspend fun deleteObjectWithCascade(objectModel: ObjectModel): DeletionResult {
         val allChildObjects = getAllChildObjectsRecursive(objectModel.id)
@@ -80,6 +87,27 @@ class ObjectRepository @Inject constructor(
     suspend fun deleteObjectSimple(objectModel: ObjectModel) =
         objectDao.deleteObject(objectModel)
 
+    suspend fun moveObject(objectId: String, newParentId: String?) {
+        val existing = objectDao.getObjectById(objectId) ?: return
+        val oldParentId = existing.parentObjectId
+
+        objectDao.updateObject(
+            existing.copy(
+                parentObjectId = newParentId,
+                needsSync = true
+            )
+        )
+
+        val toMark = mutableListOf(objectId)
+        if (oldParentId != null) toMark.add(oldParentId)
+        if (newParentId != null && newParentId != oldParentId) toMark.add(newParentId)
+
+        if (toMark.size > 1) {
+            objectDao.markManyAsPending(toMark)
+        }
+        Log.d(TAG, "Object moved: $objectId → $newParentId")
+    }
+
     suspend fun deleteProjectWithAllData(project: Project): ProjectDeletionResult {
         projectDao.deleteProject(project)
         Log.d(TAG, "Project deleted: ${project.name}")
@@ -88,6 +116,20 @@ class ObjectRepository @Inject constructor(
             materialsDeleted = 0,
             workItemsDeleted = 0
         )
+    }
+
+    suspend fun getPendingObjects(): List<ObjectModel> =
+        objectDao.getPendingObjects()
+
+    suspend fun getPendingCount(): Int =
+        objectDao.getPendingCount()
+
+    suspend fun markAsSynced(objectId: String) {
+        objectDao.markAsSynced(objectId)
+    }
+
+    suspend fun markAsPending(objectId: String) {
+        objectDao.markAsPending(objectId)
     }
 
     suspend fun cleanupOrphanedProjects(): Int {
@@ -126,7 +168,8 @@ class ObjectRepository @Inject constructor(
         val newRoot = ObjectModel(
             name = ROOT_OBJECT_NAME,
             description = "Корневые сметы (автоматически создан)",
-            userId = userPreferences.getUserId().orEmpty()
+            userId = userPreferences.getUserId().orEmpty(),
+            needsSync = false
         )
         objectDao.insertObject(newRoot)
         Log.d(TAG, "Created root object: ${newRoot.id}")

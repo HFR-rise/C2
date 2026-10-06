@@ -24,6 +24,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -31,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,6 +46,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.myapplication.data.models.ContactMethod
 import com.example.myapplication.utils.PhoneUtils
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+private val TELEGRAM_VK_REGEX = Regex("^[A-Za-z0-9_-]{3,32}$")
+
+private val EMAIL_REGEX = Regex(
+    "^" +
+            "(?=.{1,64}@)" +
+            "[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+" +
+            "(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*" +
+            "@" +
+            "(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+" +
+            "[A-Za-z]{2,}" +
+            "$"
+)
+
+private const val INVALID_INPUT_HINT_MS = 3_000L
 
 enum class ContactMethodType(
     val displayName: String,
@@ -77,7 +97,6 @@ enum class ContactMethodType(
         icon = Icons.Default.Email,
         needsAtSymbol = true,
         keyboardType = KeyboardType.Email,
-        validationRegex = "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$",
         placeholder = "example@mail.com"
     ),
     CUSTOM(
@@ -99,6 +118,17 @@ private fun String?.toContactMethodType(): ContactMethodType {
     }
 }
 
+private fun filterTelegramVkInput(input: String): String {
+    return input.filter { c ->
+        c == '_' || c == '-' ||
+                (c.code < 128 && (c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9'))
+    }
+}
+
+private fun filterEmailInput(input: String): String {
+    return input.filter { c -> c.code in 33..126 }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MethodDialog(
@@ -108,14 +138,47 @@ fun MethodDialog(
 ) {
     val defaultType = method?.methodType.toContactMethodType()
 
+    val scope = rememberCoroutineScope()
+
     var selectedType by remember { mutableStateOf(defaultType) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    var phoneValue by remember { mutableStateOf(if (defaultType == ContactMethodType.PHONE) method?.value ?: "" else "") }
-    var telegramValue by remember { mutableStateOf(if (defaultType == ContactMethodType.TELEGRAM) method?.value ?: "" else "") }
-    var vkValue by remember { mutableStateOf(if (defaultType == ContactMethodType.VK) method?.value ?: "" else "") }
-    var emailValue by remember { mutableStateOf(if (defaultType == ContactMethodType.EMAIL) method?.value ?: "" else "") }
-    var customValue by remember { mutableStateOf(if (defaultType == ContactMethodType.CUSTOM) method?.value ?: "" else "") }
+    var showInvalidInput by remember { mutableStateOf(false) }
+    var invalidInputJob by remember { mutableStateOf<Job?>(null) }
+
+    val invalidateInput: () -> Unit = remember {
+        {
+            invalidInputJob?.cancel()
+            showInvalidInput = true
+            invalidInputJob = scope.launch {
+                delay(INVALID_INPUT_HINT_MS)
+                showInvalidInput = false
+            }
+        }
+    }
+    val clearInvalidInput: () -> Unit = remember {
+        {
+            invalidInputJob?.cancel()
+            invalidInputJob = null
+            showInvalidInput = false
+        }
+    }
+
+    var phoneValue by remember {
+        mutableStateOf(if (defaultType == ContactMethodType.PHONE) method?.value ?: "" else "")
+    }
+    var telegramValue by remember {
+        mutableStateOf(if (defaultType == ContactMethodType.TELEGRAM) method?.value ?: "" else "")
+    }
+    var vkValue by remember {
+        mutableStateOf(if (defaultType == ContactMethodType.VK) method?.value ?: "" else "")
+    }
+    var emailValue by remember {
+        mutableStateOf(if (defaultType == ContactMethodType.EMAIL) method?.value ?: "" else "")
+    }
+    var customValue by remember {
+        mutableStateOf(if (defaultType == ContactMethodType.CUSTOM) method?.value ?: "" else "")
+    }
     var customTypeName by remember {
         mutableStateOf(
             if (defaultType == ContactMethodType.CUSTOM && method?.methodType != "Иное") {
@@ -124,7 +187,16 @@ fun MethodDialog(
         )
     }
 
-    var phoneTextFieldValue by remember { mutableStateOf(TextFieldValue(phoneValue)) }
+    var phoneTextFieldValue by remember {
+        mutableStateOf(
+            if (defaultType == ContactMethodType.PHONE) {
+                val formatted = PhoneUtils.format(method?.value ?: "")
+                TextFieldValue(formatted, selection = TextRange(formatted.length))
+            } else {
+                TextFieldValue("")
+            }
+        )
+    }
     var telegramTextFieldValue by remember { mutableStateOf(TextFieldValue(telegramValue)) }
     var vkTextFieldValue by remember { mutableStateOf(TextFieldValue(vkValue)) }
     var emailTextFieldValue by remember { mutableStateOf(TextFieldValue(emailValue)) }
@@ -164,21 +236,24 @@ fun MethodDialog(
     }
 
     LaunchedEffect(selectedType) {
+        clearInvalidInput()
+        errorMessage = null
+
         when (selectedType) {
             ContactMethodType.TELEGRAM -> {
                 if (telegramValue.isEmpty()) {
-                    updateCurrentValue("@", TextFieldValue("@"))
+                    updateCurrentValue("@", TextFieldValue("@", selection = TextRange(1)))
                 } else if (!telegramValue.startsWith("@")) {
                     val newVal = "@$telegramValue"
-                    updateCurrentValue(newVal, TextFieldValue(newVal))
+                    updateCurrentValue(newVal, TextFieldValue(newVal, selection = TextRange(newVal.length)))
                 }
             }
             ContactMethodType.VK -> {
                 if (vkValue.isEmpty()) {
-                    updateCurrentValue("@", TextFieldValue("@"))
+                    updateCurrentValue("@", TextFieldValue("@", selection = TextRange(1)))
                 } else if (!vkValue.startsWith("@")) {
                     val newVal = "@$vkValue"
-                    updateCurrentValue(newVal, TextFieldValue(newVal))
+                    updateCurrentValue(newVal, TextFieldValue(newVal, selection = TextRange(newVal.length)))
                 }
             }
             else -> {}
@@ -209,13 +284,8 @@ fun MethodDialog(
                 }
             }
             ContactMethodType.EMAIL -> {
-                if (!value.contains("@")) {
-                    errorMessage = "Email должен содержать символ @"
-                    return false
-                }
-                if (selectedType.validationRegex != null &&
-                    !java.util.regex.Pattern.matches(selectedType.validationRegex, value)) {
-                    errorMessage = "Введите корректный email"
+                if (!EMAIL_REGEX.matches(value)) {
+                    errorMessage = "Введите корректный email (латиница, цифры, . - _ +)"
                     return false
                 }
             }
@@ -224,8 +294,9 @@ fun MethodDialog(
                     errorMessage = "Никнейм должен начинаться с @"
                     return false
                 }
-                if (value.length < 2) {
-                    errorMessage = "Введите никнейм после @"
+                val nickname = value.substring(1)
+                if (!TELEGRAM_VK_REGEX.matches(nickname)) {
+                    errorMessage = "Никнейм: только латиница, цифры, _ и -, от 3 до 32 символов"
                     return false
                 }
             }
@@ -352,8 +423,17 @@ fun MethodDialog(
                             ContactMethodType.PHONE -> {
                                 val digits = newText.filter { it.isDigit() }.take(11)
                                 val formatted = PhoneUtils.format(digits)
-                                val newCursorPos = (cursorPos + (formatted.length - newText.length))
-                                    .coerceIn(0, formatted.length)
+
+                                val digitsBeforeCursor = newText.take(cursorPos).count { it.isDigit() }
+
+                                val totalDigitsBefore = when {
+                                    digitsBeforeCursor == 0 -> 0
+                                    !newText.startsWith("+7") -> digitsBeforeCursor + 1
+                                    else -> digitsBeforeCursor
+                                }
+
+                                val newCursorPos = PhoneUtils.cursorPositionAfterDigit(formatted, totalDigitsBefore)
+
                                 updateCurrentValue(
                                     formatted,
                                     TextFieldValue(formatted, selection = TextRange(newCursorPos))
@@ -361,17 +441,51 @@ fun MethodDialog(
                             }
                             ContactMethodType.TELEGRAM, ContactMethodType.VK -> {
                                 val withoutAt = newText.replace("@", "")
-                                val result = if (withoutAt.isNotEmpty()) "@$withoutAt" else "@"
-                                val newCursorPos = cursorPos.coerceAtMost(result.length)
+                                val filtered = filterTelegramVkInput(withoutAt)
+                                val result = "@$filtered"
+
+                                val hadInvalid = withoutAt.length != filtered.length
+
+                                if (hadInvalid) {
+                                    invalidateInput()
+                                } else {
+                                    clearInvalidInput()
+                                }
+
+                                val newCursorPos = when {
+                                    cursorPos <= 1 -> 1
+                                    else -> cursorPos.coerceAtMost(result.length)
+                                }
+
                                 updateCurrentValue(
                                     result,
                                     TextFieldValue(result, selection = TextRange(newCursorPos))
                                 )
                             }
+                            ContactMethodType.EMAIL -> {
+                                val filtered = filterEmailInput(newText)
+
+                                val hadInvalid = newText.length != filtered.length
+
+                                if (hadInvalid) {
+                                    invalidateInput()
+                                } else {
+                                    clearInvalidInput()
+                                }
+
+                                val newCursorPos = cursorPos.coerceAtMost(filtered.length)
+                                updateCurrentValue(
+                                    filtered,
+                                    TextFieldValue(filtered, selection = TextRange(newCursorPos))
+                                )
+                            }
                             else -> {
                                 updateCurrentValue(
                                     newText,
-                                    TextFieldValue(newText, selection = TextRange(cursorPos.coerceAtMost(newText.length)))
+                                    TextFieldValue(
+                                        newText,
+                                        selection = TextRange(cursorPos.coerceAtMost(newText.length))
+                                    )
                                 )
                             }
                         }
@@ -389,10 +503,25 @@ fun MethodDialog(
                     },
                     placeholder = { Text(selectedType.placeholder) },
                     modifier = Modifier.fillMaxWidth(),
-                    isError = errorMessage != null,
-                    supportingText = errorMessage?.let { { Text(it, color = Color.Red) } },
+                    isError = errorMessage != null || showInvalidInput,
+                    supportingText = {
+                        when {
+                            errorMessage != null -> Text(errorMessage!!, color = MaterialTheme.colorScheme.error)
+                            showInvalidInput -> Text("Неправильный ввод", color = MaterialTheme.colorScheme.error)
+                        }
+                    },
                     keyboardOptions = KeyboardOptions(keyboardType = selectedType.keyboardType),
-                    singleLine = true
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        errorBorderColor = Color.Red,
+                        errorLabelColor = MaterialTheme.colorScheme.error,
+                        errorSupportingTextColor = MaterialTheme.colorScheme.error,
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        errorContainerColor = MaterialTheme.colorScheme.surface,
+                    )
                 )
             }
         },

@@ -28,7 +28,8 @@ data class Material(
     val unitPrice: Double = 0.0,
     val category: String = "",
     val notes: String = "",
-    val userId: String = ""
+    val userId: String = "",
+    val version: Long? = null
 ) {
     val totalPrice: Double
         get() = quantity * unitPrice

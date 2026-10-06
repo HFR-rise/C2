@@ -1,6 +1,7 @@
 package com.example.myapplication.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -183,14 +184,16 @@ fun EmptyState(
         Text(
             text = title,
             fontSize = 16.sp,
-            fontWeight = FontWeight.Medium
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.Center
         )
         if (subtitle != null) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = subtitle,
                 fontSize = 13.sp,
-                color = Color.Gray
+                color = Color.Gray,
+                textAlign = TextAlign.Center
             )
         }
     }

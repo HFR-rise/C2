@@ -18,7 +18,8 @@ import java.util.UUID
     ],
     indices = [
         Index(value = ["parentObjectId"]),
-        Index(value = ["userId"])
+        Index(value = ["userId"]),
+        Index(value = ["needsSync"])
     ]
 )
 data class ObjectModel(
@@ -31,7 +32,11 @@ data class ObjectModel(
     val description: String = "",
     val parentObjectId: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
-    val userId: String = ""
+    val userId: String = "",
+
+    val needsSync: Boolean = false,
+
+    val version: Long? = null
 ) {
     fun getFormattedAddress(): String = buildString {
         if (street.isNotBlank()) append("ул. $street")

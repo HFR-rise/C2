@@ -11,16 +11,20 @@ import com.example.myapplication.services.SyncManager
 import com.example.myapplication.utils.FuzzySearch
 import com.example.myapplication.utils.UserPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 enum class ObjectFilterType {
     BY_NAME,
@@ -28,6 +32,7 @@ enum class ObjectFilterType {
     BY_ADDRESS
 }
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class ObjectsViewModel @Inject constructor(
     private val objectRepository: ObjectRepository,
@@ -44,6 +49,8 @@ class ObjectsViewModel @Inject constructor(
         val ROOT_OBJECT_IDS = setOf("", "root", "null", "none")
     }
 
+    private val userId: String? = userPreferences.getUserId()
+
     private val _currentParentId = MutableStateFlow(
         savedStateHandle.get<String>("parentId")
     )
@@ -56,10 +63,6 @@ class ObjectsViewModel @Inject constructor(
     private val _showInfoDialog = MutableStateFlow(false)
     private val _showEditDialog = MutableStateFlow(false)
     private val _showDeleteProjectConfirmation = MutableStateFlow(false)
-
-    private val _objects = MutableStateFlow<List<ObjectModel>>(emptyList())
-    private val _projectsInObject = MutableStateFlow<List<Project>>(emptyList())
-    private val _rootLevelProjects = MutableStateFlow<List<Project>>(emptyList())
 
     private val _objectToDelete = MutableStateFlow<ObjectModel?>(null)
     private val _infoObject = MutableStateFlow<ObjectModel?>(null)
@@ -78,10 +81,6 @@ class ObjectsViewModel @Inject constructor(
     val showEditDialog = _showEditDialog.asStateFlow()
     val showDeleteProjectConfirmation = _showDeleteProjectConfirmation.asStateFlow()
 
-    val objects = _objects.asStateFlow()
-    val projectsInObject = _projectsInObject.asStateFlow()
-    val rootLevelProjects = _rootLevelProjects.asStateFlow()
-
     val objectToDelete = _objectToDelete.asStateFlow()
     val infoObject = _infoObject.asStateFlow()
     val editingObject = _editingObject.asStateFlow()
@@ -92,30 +91,78 @@ class ObjectsViewModel @Inject constructor(
 
     val currentObjectName = _currentObjectName.asStateFlow()
 
+    val objects: StateFlow<List<ObjectModel>> = _currentParentId
+        .flatMapLatest { parentId ->
+            if (parentId != null) {
+                objectRepository.getChildObjects(parentId)
+            } else {
+                objectRepository.getRootObjects()
+                    .map { list -> list.filter { it.name != ROOT_OBJECT_NAME } }
+            }
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList()
+        )
+
+    val projectsInObject: StateFlow<List<Project>> = _currentParentId
+        .flatMapLatest { parentId ->
+            if (parentId != null) {
+                projectRepository.getProjectsByObjectId(parentId)
+            } else {
+                flowOf(emptyList())
+            }
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList()
+        )
+
+    val rootLevelProjects: StateFlow<List<Project>> = if (userId != null) {
+        projectRepository.getProjectsForUser(userId)
+            .map { list -> list.filter { isRootLevelProject(it) } }
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5_000),
+                initialValue = emptyList()
+            )
+    } else {
+        MutableStateFlow(emptyList<Project>()).asStateFlow()
+    }
+
     val filteredObjects: StateFlow<List<ObjectModel>> = combine(
-        _objects,
+        objects,
         _searchQuery,
         _currentFilter
     ) { objects, query, filter ->
         filterObjects(objects, query, filter)
     }.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
+        started = SharingStarted.WhileSubscribed(5_000),
         initialValue = emptyList()
     )
 
     init {
+        observeCurrentObjectName()
+        refreshAllData()
+    }
+
+    private fun observeCurrentObjectName() {
         viewModelScope.launch {
-            setLoading(true)
             try {
-                reloadLocalData()
-            } finally {
-                setLoading(false)
+                _currentParentId.collect { parentId ->
+                    _currentObjectName.value = parentId?.let {
+                        objectRepository.getObjectById(it)?.name
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "observeCurrentObjectName: ${e.message}", e)
             }
         }
-
-        observeCurrentObjectName()
-        ensureRootObjectExists()
     }
 
     private fun filterObjects(
@@ -142,91 +189,23 @@ class ObjectsViewModel @Inject constructor(
         }
     }
 
-    private fun ensureRootObjectExists() {
-        viewModelScope.launch {
-            runCatching {
-                val userId = userPreferences.getUserId() ?: return@launch
-
-                val rootObjects = objectRepository.getRootObjects().first()
-                if (rootObjects.none { it.name == ROOT_OBJECT_NAME }) {
-                    val rootObject = ObjectModel(
-                        name = ROOT_OBJECT_NAME,
-                        description = "Корневые сметы (автоматически создан)",
-                        userId = userId
-                    )
-                    objectRepository.insertObject(rootObject)
-                    Log.d(TAG, "Created root object: ${rootObject.id}")
-                }
-            }.onFailure { Log.e(TAG, "ensureRootObjectExists: ${it.message}") }
-        }
-    }
-
-    private suspend fun reloadLocalData() {
-        val parentId = _currentParentId.value
-
-        runCatching {
-            _objects.value = if (parentId != null) {
-                objectRepository.getChildObjectsOnce(parentId)
-            } else {
-                objectRepository.getRootObjectsOnce()
-                    .filter { it.name != ROOT_OBJECT_NAME }
-            }
-
-            if (parentId != null) {
-                _projectsInObject.value =
-                    projectRepository.getProjectsByObjectIdOnce(parentId)
-                _rootLevelProjects.value = emptyList()
-            } else {
-                _projectsInObject.value = emptyList()
-                val userId = userPreferences.getUserId()
-                _rootLevelProjects.value = if (userId != null) {
-                    projectRepository.getProjectsForUserOnce(userId)
-                        .filter { isRootLevelProject(it) }
-                } else {
-                    emptyList()
-                }
-            }
-        }.onFailure {
-            Log.e(TAG, "reloadLocalData: ${it.message}")
-            _objects.value = emptyList()
-            _projectsInObject.value = emptyList()
-            _rootLevelProjects.value = emptyList()
-            setError("Ошибка загрузки данных")
-        }
-    }
-
-    private fun observeCurrentObjectName() {
-        viewModelScope.launch {
-            _currentParentId.collect { parentId ->
-                _currentObjectName.value = parentId?.let {
-                    objectRepository.getObjectById(it)?.name
-                }
-            }
-        }
-    }
-
     fun loadDataFromLocalOnly() {
-        viewModelScope.launch {
-            setLoading(true)
-            try {
-                reloadLocalData()
-            } finally {
-                setLoading(false)
-            }
-        }
+        Log.d(TAG, "loadDataFromLocalOnly: no-op (reactive via Flow)")
     }
 
     fun refreshAllData() {
         viewModelScope.launch {
             setRefreshing(true)
             try {
-                val userId = userPreferences.getUserId()
-                if (userId != null && syncManager.hasInternetConnection()) {
-                    syncManager.syncDataFromServer(userId, skipQueueCheck = false)
+                val uid = userId
+                if (uid != null && syncManager.hasInternetConnection()) {
+                    syncManager.startPeriodicSync()
+                    syncManager.syncDataFromServer(uid, skipQueueCheck = true)
                 }
-                reloadLocalData()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "refreshAllData: ${e.message}")
+                Log.e(TAG, "refreshAllData: ${e.message}", e)
                 setError("Ошибка обновления: ${e.message}")
             } finally {
                 setRefreshing(false)
@@ -234,31 +213,10 @@ class ObjectsViewModel @Inject constructor(
         }
     }
 
-    private suspend fun refreshProjectsInternal() {
-        val parentId = _currentParentId.value
-        runCatching {
-            if (parentId != null) {
-                _projectsInObject.value =
-                    projectRepository.getProjectsByObjectIdOnce(parentId)
-            } else {
-                val userId = userPreferences.getUserId()
-                _rootLevelProjects.value = if (userId != null) {
-                    projectRepository.getProjectsForUserOnce(userId)
-                        .filter { isRootLevelProject(it) }
-                } else {
-                    emptyList()
-                }
-            }
-        }.onFailure {
-            Log.e(TAG, "refreshProjectsInternal: ${it.message}")
-        }
-    }
-
     fun updateParentId(newParentId: String?) {
         if (_currentParentId.value == newParentId) return
         Log.d(TAG, "updateParentId: ${_currentParentId.value} -> $newParentId")
         _currentParentId.value = newParentId
-        loadDataFromLocalOnly()
     }
 
     fun updateSearchQuery(query: String) {
@@ -336,8 +294,8 @@ class ObjectsViewModel @Inject constructor(
         description: String
     ) {
         viewModelScope.launch {
-            val userId = userPreferences.getUserId()
-            if (userId == null) {
+            val uid = userId
+            if (uid == null) {
                 setError("Пользователь не авторизован")
                 _showCreateDialog.value = false
                 return@launch
@@ -350,16 +308,17 @@ class ObjectsViewModel @Inject constructor(
                 building = building,
                 description = description,
                 parentObjectId = _currentParentId.value,
-                userId = userId
+                userId = uid
             )
 
             try {
                 objectRepository.insertObject(obj)
                 syncManager.syncEntityToServer(obj)
-
                 _showCreateDialog.value = false
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "createObject: ${e.message}")
+                Log.e(TAG, "createObject: ${e.message}", e)
                 setError("Ошибка создания: ${e.message}")
                 _showCreateDialog.value = false
             }
@@ -370,16 +329,17 @@ class ObjectsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val objToSave = if (obj.userId.isNullOrEmpty()) {
-                    obj.copy(userId = userPreferences.getUserId().orEmpty())
+                    obj.copy(userId = userId.orEmpty())
                 } else obj
 
                 objectRepository.updateObject(objToSave)
                 syncManager.syncEntityToServer(objToSave)
 
                 hideEditDialog()
-                reloadLocalData()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "updateObject: ${e.message}")
+                Log.e(TAG, "updateObject: ${e.message}", e)
                 setError("Ошибка обновления: ${e.message}")
             }
         }
@@ -390,12 +350,11 @@ class ObjectsViewModel @Inject constructor(
             setLoading(true)
             try {
                 objectRepository.deleteObjectWithCascade(obj)
-
                 syncManager.queueOperation("DELETE", "OBJECT", obj.id, obj)
-
-                reloadLocalData()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "deleteObject: ${e.message}")
+                Log.e(TAG, "deleteObject: ${e.message}", e)
                 setError("Ошибка при удалении: ${e.message}")
             } finally {
                 setLoading(false)
@@ -414,12 +373,11 @@ class ObjectsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 objectRepository.deleteProjectWithAllData(project)
-
                 syncManager.syncProjectDeletion(project.id)
-
-                refreshProjectsInternal()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "confirmDeleteProject: ${e.message}")
+                Log.e(TAG, "confirmDeleteProject: ${e.message}", e)
                 setError("Ошибка удаления: ${e.message}")
             }
         }
@@ -439,11 +397,12 @@ class ObjectsViewModel @Inject constructor(
                     objectId = normalizeObjectId(newObjectId)
                 )
                 projectRepository.updateProject(updatedProject)
-                syncManager.syncEntityToServer(updatedProject)
 
-                refreshProjectsInternal()
+                triggerSyncNow()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "moveProject: ${e.message}")
+                Log.e(TAG, "moveProject: ${e.message}", e)
                 setError("Ошибка перемещения: ${e.message}")
             }
         }
@@ -454,4 +413,19 @@ class ObjectsViewModel @Inject constructor(
 
     private fun isRootLevelProject(project: Project): Boolean =
         project.objectId in ROOT_OBJECT_IDS || project.objectId.isNullOrEmpty()
+
+    private fun triggerSyncNow() {
+        val uid = syncManager.currentUserId() ?: return
+        if (!syncManager.hasInternetConnection()) return
+
+        viewModelScope.launch {
+            try {
+                syncManager.syncIfQueueIsEmpty(uid)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "triggerSyncNow failed: ${e.message}", e)
+            }
+        }
+    }
 }

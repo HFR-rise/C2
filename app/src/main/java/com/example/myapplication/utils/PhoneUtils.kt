@@ -15,27 +15,46 @@ object PhoneUtils {
     }
 
     fun format(phone: String): String {
-        val digits = normalize(phone)
-        if (digits.isEmpty()) return ""
-        val number = if (digits.length == 10) "7$digits" else digits
-        return when (number.length) {
-            1 -> "+7"
-            2 -> "+7 (${number[1]}"
-            3 -> "+7 (${number.substring(1, 3)}"
-            4 -> "+7 (${number.substring(1, 4)}"
-            5 -> "+7 (${number.substring(1, 4)}) ${number[4]}"
-            6 -> "+7 (${number.substring(1, 4)}) ${number.substring(4, 6)}"
-            7 -> "+7 (${number.substring(1, 4)}) ${number.substring(4, 7)}"
-            8 -> "+7 (${number.substring(1, 4)}) ${number.substring(4, 7)}-${number[7]}"
-            9 -> "+7 (${number.substring(1, 4)}) ${number.substring(4, 7)}-${number.substring(7, 9)}"
-            10 -> "+7 (${number.substring(1, 4)}) ${number.substring(4, 7)}-${number.substring(7, 10)}"
-            11 -> "+7 (${number.substring(1, 4)}) ${number.substring(4, 7)}-${number.substring(7, 11)}"
-            else -> "+$number"
+        val rawDigits = phone.replace(DIGITS_REGEX, "").take(11)
+        if (rawDigits.isEmpty()) return ""
+
+        val userDigits = when {
+            rawDigits.startsWith("8") -> rawDigits.substring(1)
+            rawDigits.startsWith("7") -> rawDigits.substring(1)
+            else -> rawDigits
+        }.take(10)
+
+        if (userDigits.isEmpty()) {
+            return "+7 ("
+        }
+
+        return buildString {
+            append("+7 (")
+            userDigits.forEachIndexed { index, digit ->
+                when (index) {
+                    3 -> append(") ")
+                    6 -> append("-")
+                    8 -> append("-")
+                }
+                append(digit)
+            }
         }
     }
 
     fun isValid(phone: String): Boolean {
         val digits = normalize(phone)
-        return digits.length in 10..11 && digits.startsWith("7")
+        return digits.length == 11 && digits.startsWith("7")
+    }
+
+    fun cursorPositionAfterDigit(formatted: String, digitIndex: Int): Int {
+        if (digitIndex <= 0) return 0
+        var seen = 0
+        for (i in formatted.indices) {
+            if (formatted[i].isDigit()) {
+                seen++
+                if (seen == digitIndex) return i + 1
+            }
+        }
+        return formatted.length
     }
 }

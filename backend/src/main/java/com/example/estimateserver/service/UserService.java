@@ -2,6 +2,7 @@ package com.example.estimateserver.service;
 
 import com.example.estimateserver.model.User;
 import com.example.estimateserver.repository.UserRepository;
+import com.example.estimateserver.utils.PhoneUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -20,6 +21,19 @@ public class UserService {
 
     private static final long CODE_TTL_MS = 5 * 60 * 1000L;
 
+    public static class InvalidPhoneException extends RuntimeException {
+        public InvalidPhoneException(String message) { super(message); }
+    }
+
+    public static class InvalidCodeException extends RuntimeException {
+        public InvalidCodeException(String message) { super(message); }
+    }
+
+    @Deprecated
+    public static class AccountInUseException extends RuntimeException {
+        public AccountInUseException(String message) { super(message); }
+    }
+
     private final UserRepository userRepository;
     private final SmsService smsService;
     private final WebSocketService webSocketService;
@@ -34,7 +48,12 @@ public class UserService {
     }
 
     @Transactional
-    public void sendVerificationCode(String phoneNumber) {
+    public void sendVerificationCode(String rawPhoneNumber) {
+        String phoneNumber = PhoneUtils.normalize(rawPhoneNumber);
+        if (phoneNumber == null) {
+            throw new InvalidPhoneException("Неверный формат номера телефона");
+        }
+
         String code = String.format("%06d", random.nextInt(1_000_000));
 
         User user = findOrCreateUser(phoneNumber);
@@ -46,16 +65,16 @@ public class UserService {
         userRepository.save(user);
         smsService.sendCode(phoneNumber, code);
 
-        log.info("Verification code sent to {}", maskPhone(phoneNumber));
+        log.info("Verification code sent to {}", PhoneUtils.mask(phoneNumber));
     }
 
-    private User findOrCreateUser(String phoneNumber) {
-        Optional<User> existing = userRepository.findByPhoneNumber(phoneNumber);
+    private User findOrCreateUser(String normalizedPhoneNumber) {
+        Optional<User> existing = userRepository.findByPhoneNumber(normalizedPhoneNumber);
         if (existing.isPresent()) {
             return existing.get();
         }
 
-        User user = new User(phoneNumber);
+        User user = new User(normalizedPhoneNumber);
         user.setId(UUID.randomUUID().toString());
         user.setUserId(user.getId());
         user.setCreatedAt(new Date());
@@ -64,39 +83,41 @@ public class UserService {
         try {
             return userRepository.save(user);
         } catch (DataIntegrityViolationException e) {
-            log.debug("Concurrent user creation for {}, re-reading", maskPhone(phoneNumber));
-            return userRepository.findByPhoneNumber(phoneNumber)
+            log.debug("Concurrent user creation for {}, re-reading",
+                    PhoneUtils.mask(normalizedPhoneNumber));
+            return userRepository.findByPhoneNumber(normalizedPhoneNumber)
                     .orElseThrow(() -> new IllegalStateException(
                             "User disappeared after constraint violation", e));
         }
     }
 
     @Transactional
-    public User verifyCode(String phoneNumber, String code) {
-        return verifyCode(phoneNumber, code, null);
+    public User verifyCode(String rawPhoneNumber, String code) {
+        return verifyCode(rawPhoneNumber, code, null);
     }
 
     @Transactional
-    public User verifyCode(String phoneNumber, String code, String deviceId) {
+    public User verifyCode(String rawPhoneNumber, String code, String deviceId) {
+        String phoneNumber = PhoneUtils.normalize(rawPhoneNumber);
+        if (phoneNumber == null) {
+            throw new InvalidPhoneException("Неверный формат номера телефона");
+        }
+
         User user = userRepository.findByPhoneNumberForUpdate(phoneNumber)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new InvalidCodeException("Пользователь не найден"));
 
         if (user.getVerificationCode() == null || !user.getVerificationCode().equals(code)) {
-            throw new RuntimeException("Invalid code");
+            throw new InvalidCodeException("Неверный код");
         }
         if (user.getCodeExpiresAt() != null && user.getCodeExpiresAt().before(new Date())) {
-            throw new RuntimeException("Code expired");
+            throw new InvalidCodeException("Код истёк");
         }
 
-        String finalDeviceId = (deviceId != null) ? deviceId : UUID.randomUUID().toString();
-        String currentSession = user.getActiveSessionId();
+        String finalDeviceId = (deviceId != null && !deviceId.isBlank())
+                ? deviceId
+                : UUID.randomUUID().toString();
 
-        log.debug("Verify code: user={}, currentSession={}, newDevice={}",
-                user.getId(), currentSession, finalDeviceId);
-
-        if (currentSession != null && !currentSession.equals(finalDeviceId)) {
-            handleDeviceChange(user, finalDeviceId);
-        }
+        handleDeviceChange(user, finalDeviceId);
 
         user.setVerified(true);
         user.setVerificationCode(null);
@@ -110,25 +131,30 @@ public class UserService {
         }
 
         User saved = userRepository.save(user);
-        log.info("User {} logged in on device {}", maskPhone(phoneNumber), finalDeviceId);
+        log.info("User {} logged in on device {}",
+                PhoneUtils.mask(phoneNumber), finalDeviceId);
         return saved;
     }
 
     private void handleDeviceChange(User user, String newDeviceId) {
         String oldDeviceId = user.getActiveSessionId();
+
+        if (newDeviceId == null || newDeviceId.equals(oldDeviceId)) {
+            return;
+        }
+
+        log.info("Device change: user={}, old={}, new={}",
+                user.getId(), oldDeviceId, newDeviceId);
+
         boolean oldOnline = webSocketService.hasSession(user.getId());
 
         if (oldOnline) {
-            log.warn("Login rejected: user={} already online on device={}",
+            log.warn("Old device online, forcing logout: user={}, old={}",
                     user.getId(), oldDeviceId);
-            throw new RuntimeException("Account already in use on another device");
-        }
-
-        log.info("Old device offline, replacing session: user={}, old={}, new={}",
-                user.getId(), oldDeviceId, newDeviceId);
-
-        if (webSocketService.hasAnySession(user.getId())) {
-            webSocketService.removeSession(user.getId());
+            webSocketService.sendForceLogout(user.getId());
+            webSocketService.removeSession(user.getId(), false);
+        } else if (webSocketService.hasAnySession(user.getId())) {
+            webSocketService.removeSession(user.getId(), false);
         }
 
         if (oldDeviceId != null && !oldDeviceId.isEmpty()) {
@@ -139,7 +165,8 @@ public class UserService {
     @Transactional
     public void logout(String userId) {
         userRepository.findById(userId).ifPresent(user -> {
-            log.info("Logout: user={}", userId);
+            log.info("Logout: user={}, oldDevice={}",
+                    userId, user.getActiveSessionId());
 
             webSocketService.removeSession(userId);
 
@@ -180,7 +207,7 @@ public class UserService {
         boolean matches = activeSessionId != null && activeSessionId.equals(deviceId);
 
         if (!matches) {
-            log.debug("isSessionValid: device mismatch for user={} (expected={}, got={})",
+            log.warn("isSessionValid FAIL: userId={}, expected={}, got={}",
                     userId, activeSessionId, deviceId);
         }
         return matches;
@@ -198,16 +225,13 @@ public class UserService {
         return webSocketService.hasAnySession(userId);
     }
 
-    public Optional<User> findByPhoneNumber(String phoneNumber) {
-        return userRepository.findByPhoneNumber(phoneNumber);
+    public Optional<User> findByPhoneNumber(String rawPhoneNumber) {
+        String normalized = PhoneUtils.normalize(rawPhoneNumber);
+        if (normalized == null) return Optional.empty();
+        return userRepository.findByPhoneNumber(normalized);
     }
 
     public Optional<User> findById(String id) {
         return userRepository.findById(id);
-    }
-
-    private static String maskPhone(String phone) {
-        if (phone == null || phone.length() < 4) return "***";
-        return "*".repeat(phone.length() - 4) + phone.substring(phone.length() - 4);
     }
 }

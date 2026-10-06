@@ -17,12 +17,29 @@ public class ObjectModel {
     private String building;
     private String description;
     private String parentObjectId;
+
     private Long createdAt = System.currentTimeMillis();
+    private Long updatedAt = System.currentTimeMillis();
 
     @Column(nullable = false)
     private String userId;
 
+    @Version
+    private Long version;
+
     public ObjectModel() {}
+
+    @PrePersist
+    void onCreate() {
+        long now = System.currentTimeMillis();
+        if (createdAt == null) createdAt = now;
+        if (updatedAt == null) updatedAt = now;
+    }
+
+    @PreUpdate
+    void onUpdate() {
+        updatedAt = System.currentTimeMillis();
+    }
 
     public String getUserId() { return userId; }
     public void setUserId(String userId) { this.userId = userId; }
@@ -50,6 +67,12 @@ public class ObjectModel {
 
     public Long getCreatedAt() { return createdAt; }
     public void setCreatedAt(Long createdAt) { this.createdAt = createdAt; }
+
+    public Long getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(Long updatedAt) { this.updatedAt = updatedAt; }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 
     public String getFormattedAddress() {
         StringBuilder sb = new StringBuilder();

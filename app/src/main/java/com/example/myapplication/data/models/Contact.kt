@@ -7,7 +7,10 @@ import java.util.UUID
 
 @Entity(
     tableName = "contacts",
-    indices = [Index(value = ["userId"])]
+    indices = [
+        Index(value = ["userId"]),
+        Index(value = ["needsSync"])
+    ]
 )
 data class Contact(
     @PrimaryKey
@@ -15,5 +18,9 @@ data class Contact(
     val name: String,
     val description: String = "",
     val createdAt: Long = System.currentTimeMillis(),
-    val userId: String = ""
+    val userId: String = "",
+
+    val needsSync: Boolean = false,
+
+    val version: Long? = null
 )

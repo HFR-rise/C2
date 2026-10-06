@@ -23,7 +23,6 @@ import com.example.myapplication.viewmodels.ContactsViewModel
 import com.example.myapplication.viewmodels.SearchFilter
 import com.google.accompanist.swiperefresh.SwipeRefresh
 import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
-import kotlinx.coroutines.flow.first
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,16 +46,26 @@ fun ContactsScreen(
     var contactDetailsMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
     var editDialogMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
 
-    LaunchedEffect(selectedContactForDetails) {
-        contactDetailsMethods = selectedContactForDetails?.let { contact ->
-            viewModel.getContactMethods(contact.id).first()
-        } ?: emptyList()
+    LaunchedEffect(selectedContactForDetails?.id) {
+        val contactId = selectedContactForDetails?.id
+        if (contactId == null) {
+            contactDetailsMethods = emptyList()
+            return@LaunchedEffect
+        }
+        viewModel.getContactMethods(contactId).collect { methods ->
+            contactDetailsMethods = methods
+        }
     }
 
-    LaunchedEffect(editingContact) {
-        editDialogMethods = editingContact?.let { contact ->
-            viewModel.getContactMethods(contact.id).first()
-        } ?: emptyList()
+    LaunchedEffect(editingContact?.id) {
+        val contactId = editingContact?.id
+        if (contactId == null) {
+            editDialogMethods = emptyList()
+            return@LaunchedEffect
+        }
+        viewModel.getContactMethods(contactId).collect { methods ->
+            editDialogMethods = methods
+        }
     }
 
     val swipeRefreshState = rememberSwipeRefreshState(isRefreshing)
@@ -96,39 +105,63 @@ fun ContactsScreen(
             Column(modifier = Modifier.fillMaxSize()) {
                 GradientDivider()
 
-                LazyColumn(
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(
-                        items = filteredContacts,
-                        key = { "${it.id}_$duplicatesVersion" }
-                    ) { contact ->
-                        ContactCard(
-                            contact = contact,
-                            onContactClick = { selectedContactForDetails = contact },
-                            onEdit = { viewModel.startEditing(contact) },
-                            onDelete = { contactToDelete = contact },
-                            onDuplicateClick = {
-                                viewModel.getDuplicateContacts(contact.id).firstOrNull()
-                                    ?.let { dupId ->
-                                        viewModel.contacts.value.find { it.id == dupId }?.let {
-                                            selectedContactForDetails = it
-                                        }
-                                    }
-                            },
-                            hasDuplicate = viewModel.hasDuplicates(contact.id)
-                        )
+                when {
+                    filteredContacts.isEmpty() && searchQuery.isBlank() -> {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(16.dp)
+                        ) {
+                            item {
+                                EmptyState(
+                                    icon = Icons.Default.Person,
+                                    title = "Нет контактов",
+                                    subtitle = "Для создания нажмите +"
+                                )
+                            }
+                        }
                     }
 
-                    if (filteredContacts.isEmpty() && searchQuery.isNotBlank()) {
-                        item {
-                            EmptyState(
-                                icon = Icons.Default.SearchOff,
-                                title = "Ничего не найдено",
-                                subtitle = "По запросу \"$searchQuery\""
-                            )
+                    filteredContacts.isEmpty() -> {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(16.dp)
+                        ) {
+                            item {
+                                EmptyState(
+                                    icon = Icons.Default.SearchOff,
+                                    title = "Ничего не найдено",
+                                    subtitle = "По запросу \"$searchQuery\""
+                                )
+                            }
+                        }
+                    }
+
+                    else -> {
+                        LazyColumn(
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(
+                                items = filteredContacts,
+                                key = { "${it.id}_$duplicatesVersion" }
+                            ) { contact ->
+                                ContactCard(
+                                    contact = contact,
+                                    onContactClick = { selectedContactForDetails = contact },
+                                    onEdit = { viewModel.startEditing(contact) },
+                                    onDelete = { contactToDelete = contact },
+                                    onDuplicateClick = {
+                                        viewModel.getDuplicateContacts(contact.id).firstOrNull()
+                                            ?.let { dupId ->
+                                                viewModel.contacts.value.find { it.id == dupId }?.let {
+                                                    selectedContactForDetails = it
+                                                }
+                                            }
+                                    },
+                                    hasDuplicate = viewModel.hasDuplicates(contact.id)
+                                )
+                            }
                         }
                     }
                 }

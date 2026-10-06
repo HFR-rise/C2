@@ -19,7 +19,8 @@ import javax.inject.Singleton
 
 @Singleton
 class NetworkMonitor @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @ApplicationContext
+    private val context: Context,
     private val userPreferences: UserPreferences,
     private val webSocketService: WebSocketService,
     private val syncManager: SyncManager,

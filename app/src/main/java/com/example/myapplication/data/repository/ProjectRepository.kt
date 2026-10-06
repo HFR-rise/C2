@@ -1,6 +1,5 @@
 package com.example.myapplication.data.repository
 
-import android.util.Log
 import com.example.myapplication.data.database.MaterialDao
 import com.example.myapplication.data.database.ProjectDao
 import com.example.myapplication.data.database.WorkItemDao
@@ -55,60 +54,69 @@ class ProjectRepository @Inject constructor(
         workItemDao.getWorkItemsForProjectOnce(projectId)
 
     suspend fun createProject(project: Project): Project {
-        projectDao.insertProject(project)
-        return project
+        val withNeedsSync = project.copy(needsSync = true)
+        projectDao.insertProject(withNeedsSync)
+        return withNeedsSync
     }
 
-    suspend fun updateProject(project: Project) =
-        projectDao.updateProject(project)
+    suspend fun updateProject(project: Project) {
+        projectDao.updateProject(project.copy(needsSync = true))
+    }
 
     suspend fun deleteProject(project: Project) =
         projectDao.deleteProject(project)
 
-    suspend fun updateProjectObjectId(projectId: String, newObjectId: String) =
+    suspend fun updateProjectObjectId(projectId: String, newObjectId: String) {
         projectDao.updateProjectObjectId(projectId, newObjectId)
+        projectDao.markAsPending(projectId)
+    }
 
     suspend fun addMaterial(material: Material) {
         materialDao.insertMaterial(material)
         updateProjectTotal(material.projectId)
+        projectDao.markAsPending(material.projectId)
     }
 
     suspend fun updateMaterial(material: Material) {
         materialDao.updateMaterial(material)
         updateProjectTotal(material.projectId)
+        projectDao.markAsPending(material.projectId)
     }
 
     suspend fun deleteMaterial(material: Material) {
         materialDao.deleteMaterial(material)
         updateProjectTotal(material.projectId)
+        projectDao.markAsPending(material.projectId)
     }
 
     suspend fun addWorkItem(workItem: WorkItem) {
         workItemDao.insertWorkItem(workItem)
         updateProjectTotal(workItem.projectId)
+        projectDao.markAsPending(workItem.projectId)
     }
 
     suspend fun updateWorkItem(workItem: WorkItem) {
         workItemDao.updateWorkItem(workItem)
         updateProjectTotal(workItem.projectId)
+        projectDao.markAsPending(workItem.projectId)
     }
 
     suspend fun deleteWorkItem(workItem: WorkItem) {
         workItemDao.deleteWorkItem(workItem)
         updateProjectTotal(workItem.projectId)
+        projectDao.markAsPending(workItem.projectId)
     }
 
-    suspend fun getPendingProjects(userId: String): Response<List<Project>> =
-        apiService.getPendingProjects(userId)
+    suspend fun markAsPending(projectId: String) {
+        projectDao.markAsPending(projectId)
+    }
 
-    suspend fun acceptShare(projectId: String): Response<Unit> =
-        apiService.acceptShare(projectId)
+    suspend fun markAsSynced(projectId: String) {
+        projectDao.markAsSynced(projectId)
+    }
 
-    suspend fun declineShare(projectId: String): Response<Unit> =
-        apiService.declineShare(projectId)
-
-    suspend fun shareProject(projectId: String, phoneNumber: String): Response<Unit> =
-        apiService.shareProject(projectId, mapOf("phoneNumber" to phoneNumber))
+    suspend fun getPendingProjects(): List<Project> =
+        projectDao.getPendingProjects()
 
     suspend fun deleteAllProjects() {
         projectDao.deleteAll()

@@ -31,7 +31,8 @@ data class WorkItem(
     val isCompleted: Boolean = false,
     val completedAt: Date? = null,
     val notes: String = "",
-    val userId: String = ""
+    val userId: String = "",
+    val version: Long? = null
 ) {
     val laborCost: Double get() = laborHours * hourlyRate
 

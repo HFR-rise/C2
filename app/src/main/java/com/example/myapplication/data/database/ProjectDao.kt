@@ -56,4 +56,16 @@ interface ProjectDao {
 
     @Query("DELETE FROM projects")
     suspend fun deleteAll()
+
+    @Query("UPDATE projects SET needsSync = 1 WHERE id = :projectId")
+    suspend fun markAsPending(projectId: String)
+
+    @Query("UPDATE projects SET needsSync = 0 WHERE id = :projectId")
+    suspend fun markAsSynced(projectId: String)
+
+    @Query("SELECT * FROM projects WHERE needsSync = 1")
+    suspend fun getPendingProjects(): List<Project>
+
+    @Query("SELECT COUNT(*) FROM projects WHERE needsSync = 1")
+    suspend fun getPendingCount(): Int
 }

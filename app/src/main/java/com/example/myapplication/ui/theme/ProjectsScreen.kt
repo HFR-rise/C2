@@ -12,14 +12,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
-import androidx.compose.material.icons.filled.SupervisorAccount
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -145,10 +142,15 @@ fun ProjectsScreen(
                                 ProjectCard(
                                     project = project,
                                     onClick = { navController.navigate("view_project/${project.id}") },
-                                    onShare = { },
-                                    onEdit = { navController.navigate("edit_project/${project.id}") },
+                                    onEdit = {
+                                        when (project.myRole) {
+                                            "ESTIMATOR" -> navController.navigate("edit_draft/${project.id}")
+                                            else -> navController.navigate("edit_project/${project.id}")
+                                        }
+                                    },
                                     onMove = { navController.navigate("move_project/${project.id}/none") },
                                     onDelete = { viewModel.showDeleteProjectConfirmation(project) }
+                                    // onManageMembers убрано — роли теперь меняются внутри сметы
                                 )
                             }
                         }
@@ -244,11 +246,9 @@ private fun ProjectsFilterDialog(
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
-                SectionHeader(title = "Контакты")
+                SectionHeader(title = "Участники")
                 listOf(
-                    ProjectFilterType.BY_CUSTOMER,
-                    ProjectFilterType.BY_FOREMAN,
-                    ProjectFilterType.BY_MANAGER
+                    ProjectFilterType.BY_PARTICIPANT
                 ).forEach { filter ->
                     FilterOption(
                         title = getProjectFilterName(filter),
@@ -272,23 +272,17 @@ private fun ProjectsFilterDialog(
 private fun getProjectFilterIcon(filter: ProjectFilterType): ImageVector = when (filter) {
     ProjectFilterType.BY_NAME -> Icons.Default.Title
     ProjectFilterType.BY_DESCRIPTION -> Icons.Default.Description
-    ProjectFilterType.BY_CUSTOMER -> Icons.Default.Person
-    ProjectFilterType.BY_FOREMAN -> Icons.Default.Build
-    ProjectFilterType.BY_MANAGER -> Icons.Default.SupervisorAccount
+    ProjectFilterType.BY_PARTICIPANT -> Icons.Default.Person
 }
 
 private fun getProjectFilterName(filter: ProjectFilterType): String = when (filter) {
     ProjectFilterType.BY_NAME -> "По названию"
     ProjectFilterType.BY_DESCRIPTION -> "По описанию"
-    ProjectFilterType.BY_CUSTOMER -> "По заказчику"
-    ProjectFilterType.BY_FOREMAN -> "По прорабу"
-    ProjectFilterType.BY_MANAGER -> "По менеджеру"
+    ProjectFilterType.BY_PARTICIPANT -> "По участнику"
 }
 
 private fun getProjectSearchPlaceholder(filter: ProjectFilterType): String = when (filter) {
     ProjectFilterType.BY_NAME -> "Поиск по названию..."
     ProjectFilterType.BY_DESCRIPTION -> "Поиск по описанию..."
-    ProjectFilterType.BY_CUSTOMER -> "Поиск по заказчику..."
-    ProjectFilterType.BY_FOREMAN -> "Поиск по прорабу..."
-    ProjectFilterType.BY_MANAGER -> "Поиск по менеджеру..."
+    ProjectFilterType.BY_PARTICIPANT -> "Поиск по имени участника..."
 }

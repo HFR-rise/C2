@@ -61,6 +61,10 @@ class UserPreferences @Inject constructor(
     }
 
     fun clear() {
+        val deviceId = prefs.getString("device_id", null)
         prefs.edit().clear().apply()
+        if (deviceId != null) {
+            prefs.edit().putString("device_id", deviceId).apply()
+        }
     }
 }
